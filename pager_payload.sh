@@ -159,9 +159,8 @@ check_dependencies() {
 # ============================================================
 
 cleanup() {
-    if ! pgrep -x pineapple >/dev/null; then
-        /etc/init.d/pineapplepager start 2>/dev/null
-    fi
+    # Re-register and start pager service (undoes the procd deregister below)
+    /etc/init.d/pineapplepager start 2>/dev/null
 }
 
 trap cleanup EXIT
@@ -235,6 +234,18 @@ mkdir -p "$DATA_DIR" 2>/dev/null
 SPINNER_ID=$(START_SPINNER "Starting Ragnar...")
 /etc/init.d/pineapplepager stop 2>/dev/null
 sleep 0.5
+
+# Prevent procd auto-respawn: pineapd crashes on shutdown ("terminate called
+# without an active exception") which procd interprets as a crash and respawns
+# the service ~15s later, stealing the LCD back from Ragnar.
+# Deregister the service from procd so it stays stopped.
+ubus call service delete '{"name":"pineapplepager"}' 2>/dev/null
+
+# Kill any processes that procd may have already respawned
+killall pineapple 2>/dev/null
+killall pineapd 2>/dev/null
+sleep 0.5
+
 STOP_SPINNER "$SPINNER_ID" 2>/dev/null
 
 # Payload loop with handoff support
