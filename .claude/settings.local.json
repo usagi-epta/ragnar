@@ -12,7 +12,8 @@
       "WebSearch",
       "WebFetch(domain:docs.hak5.org)",
       "WebFetch(domain:deepwiki.com)",
-      "Bash(bash -n \"/c/Users/pigo01/OneDrive - Signup Software AB/Documents/GitHub/Ragnar/pager_payload.sh\")"
+      "Bash(bash -n \"/c/Users/pigo01/OneDrive - Signup Software AB/Documents/GitHub/Ragnar/pager_payload.sh\")",
+      "Bash(python:*)"
     ]
   }
 }
