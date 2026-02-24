@@ -32,7 +32,7 @@ from typing import Dict, List, Optional, Any, Tuple
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from enum import Enum
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed  # kept for _run_full_scan only
 from queue import Queue, Empty
 
 from logger import Logger
@@ -446,8 +446,9 @@ class AdvancedVulnScanner:
         from collections import deque
         self.scan_history: deque = deque(maxlen=100)
 
-        # Thread pool for parallel scanning
-        self._executor: Optional[ThreadPoolExecutor] = None
+        # Scan threading (direct threads instead of ThreadPoolExecutor
+        # to avoid "cannot schedule new futures after interpreter shutdown"
+        # on Python 3.12+/3.13 where atexit shuts down executors early)
         self._max_workers = 4  # Configurable based on system
 
         # Tool paths
@@ -927,16 +928,16 @@ class AdvancedVulnScanner:
         # Save to database
         self._save_scan_to_db(scan_id, progress, options)
 
-        # Start scan in thread pool
-        if self._executor is None or self._executor._shutdown:
-            self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
-
-        try:
-            self._executor.submit(self._run_scan, scan_id, target, scan_type, options)
-        except RuntimeError:
-            # Executor was shut down (interpreter exiting or cleanup) — create a fresh one
-            self._executor = ThreadPoolExecutor(max_workers=self._max_workers)
-            self._executor.submit(self._run_scan, scan_id, target, scan_type, options)
+        # Start scan in a direct daemon thread (avoids Python 3.12+/3.13
+        # ThreadPoolExecutor atexit shutdown that causes "cannot schedule
+        # new futures after interpreter shutdown").
+        scan_thread = threading.Thread(
+            target=self._run_scan,
+            args=(scan_id, target, scan_type, options),
+            name=f"avs-{scan_id}",
+            daemon=True,
+        )
+        scan_thread.start()
 
         logger.info(f"Started {scan_type.value} scan {scan_id} against {target}")
         return scan_id
@@ -5123,34 +5124,36 @@ class AdvancedVulnScanner:
         scanners = self.get_available_scanners()
         is_web_target = target.startswith('http') or options.get('port', 80) in [80, 443, 8080, 8443]
 
-        # Create sub-scans for each available scanner
-        sub_futures = []
+        # Run sub-scans in direct threads (avoids executor shutdown issues on Python 3.13)
+        sub_threads = []
 
-        with ThreadPoolExecutor(max_workers=4) as executor:
-            if scanners.get('nuclei'):
-                sub_futures.append(
-                    executor.submit(self._run_nuclei_scan, scan_id, target, options)
-                )
-            if scanners.get('nikto') and is_web_target:
-                sub_futures.append(
-                    executor.submit(self._run_nikto_scan, scan_id, target, options)
-                )
-            if scanners.get('nmap_vuln'):
-                sub_futures.append(
-                    executor.submit(self._run_nmap_vuln_scan, scan_id, target, options)
-                )
-            # Include ZAP for web targets if available and enabled
-            if scanners.get('zap') and is_web_target and options.get('include_zap', True):
-                sub_futures.append(
-                    executor.submit(self._run_zap_full_scan, scan_id, target, options)
-                )
+        def _safe_run(fn, *args):
+            try:
+                fn(*args)
+            except Exception as e:
+                logger.error(f"Sub-scan error: {e}")
 
-            # Wait for all to complete
-            for future in as_completed(sub_futures):
-                try:
-                    future.result()
-                except Exception as e:
-                    logger.error(f"Sub-scan error: {e}")
+        if scanners.get('nuclei'):
+            t = threading.Thread(target=_safe_run, args=(self._run_nuclei_scan, scan_id, target, options), daemon=True)
+            t.start()
+            sub_threads.append(t)
+        if scanners.get('nikto') and is_web_target:
+            t = threading.Thread(target=_safe_run, args=(self._run_nikto_scan, scan_id, target, options), daemon=True)
+            t.start()
+            sub_threads.append(t)
+        if scanners.get('nmap_vuln'):
+            t = threading.Thread(target=_safe_run, args=(self._run_nmap_vuln_scan, scan_id, target, options), daemon=True)
+            t.start()
+            sub_threads.append(t)
+        # Include ZAP for web targets if available and enabled
+        if scanners.get('zap') and is_web_target and options.get('include_zap', True):
+            t = threading.Thread(target=_safe_run, args=(self._run_zap_full_scan, scan_id, target, options), daemon=True)
+            t.start()
+            sub_threads.append(t)
+
+        # Wait for all to complete
+        for t in sub_threads:
+            t.join()
     
     def get_scan_status(self, scan_id: str) -> Optional[Dict]:
         """Get status of a scan (checks memory first, then database)"""
@@ -5462,10 +5465,12 @@ class AdvancedVulnScanner:
             return None
 
     def cleanup(self):
-        """Cleanup resources"""
-        if self._executor:
-            self._executor.shutdown(wait=False)
-            self._executor = None
+        """Cleanup resources (ZAP process, etc.)"""
+        try:
+            if self._zap_process and self._zap_process.poll() is None:
+                self._zap_process.terminate()
+        except Exception:
+            pass
 
 
 # Global instance
