@@ -2981,12 +2981,24 @@ def update_config():
         
         # Emit update to all connected clients
         socketio.emit('config_updated', shared_data.config)
-        
+
         response = {'success': True, 'message': 'Configuration updated'}
         if ai_reload_success is not None:
             response['ai_reload_success'] = ai_reload_success
             if ai_reload_error:
                 response['ai_reload_error'] = ai_reload_error
+
+        # EPD type change requires a full service restart to reinitialize hardware
+        if epd_type_changed:
+            response['restart_required'] = True
+            response['message'] = 'Display type changed - restarting Ragnar service...'
+            import threading
+            def _delayed_restart():
+                import time, os, signal
+                time.sleep(2)  # Give the response time to reach the client
+                logger.info(f"Restarting Ragnar service for EPD type change to: {shared_data.config.get('epd_type')}")
+                os.system('systemctl restart ragnar.service')
+            threading.Thread(target=_delayed_restart, daemon=True).start()
 
         return jsonify(response)
     except Exception as e:

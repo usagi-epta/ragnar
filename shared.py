@@ -67,8 +67,8 @@ SIZE_KEY_TO_DEFAULT_DRIVER = {
 def resolve_epd_type(size_key, current_epd_type=None):
     """Resolve a web UI size key to the correct driver name.
 
-    If the current driver is already the same size family, keep it.
-    Otherwise, switch to the default driver for the new size.
+    If the current driver is already the same size family (e.g. epd2in13_V3 for 2in13),
+    keep it. Otherwise, switch to the default driver for the new size.
     """
     if size_key == "auto" or size_key in DISPLAY_PROFILES:
         return size_key  # Already a valid driver name or auto
@@ -77,9 +77,10 @@ def resolve_epd_type(size_key, current_epd_type=None):
     if not default_driver:
         return size_key  # Unknown key, return as-is
 
-    # If current driver is the same size family, keep it
+    # If current driver is the same size family AND is a known valid profile, keep it
     if current_epd_type and current_epd_type.startswith(f"epd{size_key}"):
-        return current_epd_type
+        if current_epd_type in DISPLAY_PROFILES:
+            return current_epd_type
 
     return default_driver
 

@@ -653,6 +653,24 @@ setup_ragnar() {
         sed -i "s/\"epd_type\": \"epd2in13_V4\"/\"epd_type\": \"$EPD_VERSION\"/" "$ragnar_PATH/shared.py"
         check_success "Updated shared.py default EPD configuration to $EPD_VERSION"
         log "INFO" "Modified: $ragnar_PATH/shared.py"
+
+        # Also update shared_config.json if it exists (from previous install)
+        local config_json="$ragnar_PATH/config/shared_config.json"
+        if [ -f "$config_json" ]; then
+            python3 -c "
+import json, sys
+try:
+    with open('$config_json', 'r') as f:
+        cfg = json.load(f)
+    cfg['epd_type'] = '$EPD_VERSION'
+    with open('$config_json', 'w') as f:
+        json.dump(cfg, f, indent=4)
+    print('SUCCESS: Updated shared_config.json epd_type to $EPD_VERSION')
+except Exception as e:
+    print(f'WARNING: Could not update shared_config.json: {e}')
+"
+            log "INFO" "Updated config JSON: $config_json -> epd_type=$EPD_VERSION"
+        fi
     else
         log "WARNING" "shared.py not found at $ragnar_PATH/shared.py - skipping E-Paper configuration update"
     fi
