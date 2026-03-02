@@ -55,6 +55,34 @@ except ImportError:
 DEFAULT_EPD_TYPE = "epd2in13_V4"
 DESIGN_REF_WIDTH = 122   # All layout coordinates are designed for this width
 DESIGN_REF_HEIGHT = 250  # All layout coordinates are designed for this height
+
+# Map web UI size keys to default driver names
+SIZE_KEY_TO_DEFAULT_DRIVER = {
+    "2in13": "epd2in13_V4",
+    "2in7":  "epd2in7",
+    "2in9":  "epd2in9_V2",
+    "3in7":  "epd3in7",
+}
+
+def resolve_epd_type(size_key, current_epd_type=None):
+    """Resolve a web UI size key to the correct driver name.
+
+    If the current driver is already the same size family, keep it.
+    Otherwise, switch to the default driver for the new size.
+    """
+    if size_key == "auto" or size_key in DISPLAY_PROFILES:
+        return size_key  # Already a valid driver name or auto
+
+    default_driver = SIZE_KEY_TO_DEFAULT_DRIVER.get(size_key)
+    if not default_driver:
+        return size_key  # Unknown key, return as-is
+
+    # If current driver is the same size family, keep it
+    if current_epd_type and current_epd_type.startswith(f"epd{size_key}"):
+        return current_epd_type
+
+    return default_driver
+
 DISPLAY_PROFILES = {
     "epd2in13":    {"ref_width": DESIGN_REF_WIDTH, "ref_height": DESIGN_REF_HEIGHT, "default_flip": False},
     "epd2in7":     {"ref_width": DESIGN_REF_WIDTH, "ref_height": DESIGN_REF_HEIGHT, "default_flip": False},

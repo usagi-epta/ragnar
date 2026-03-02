@@ -2926,6 +2926,12 @@ def update_config():
         ai_reload_error = None
         epd_type_changed = 'epd_type' in data
 
+        # Resolve size keys (from web UI) to actual driver names
+        if epd_type_changed:
+            from shared import resolve_epd_type
+            raw_epd = data['epd_type']
+            data['epd_type'] = resolve_epd_type(raw_epd, shared_data.config.get('epd_type'))
+
         # Update configuration (allow new keys to be added)
         for key, value in data.items():
             # Skip private/internal keys that start with __
