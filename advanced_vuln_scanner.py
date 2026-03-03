@@ -539,14 +539,15 @@ class AdvancedVulnScanner:
     def _zap_watchdog(self):
         """Background watchdog that starts the ZAP daemon and keeps it alive.
 
-        Runs immediately on startup, then polls every 30 seconds.  When ZAP
-        is found to be down (and the user hasn't explicitly stopped it), the
-        watchdog attempts a restart with back-off: 30 s → 60 s → 120 s.
-        After a successful restart the interval resets.
+        Polls every 30 seconds.  Requires 3 consecutive failed health checks
+        (~90 s) before attempting a restart, to tolerate brief Java GC pauses
+        on ARM.  Uses back-off for repeated restart failures.
         """
         POLL_INTERVAL = 30          # seconds between health checks
+        FAILURES_BEFORE_RESTART = 3 # require 3 consecutive failures (~90s)
         BACKOFF_DELAYS = [30, 60, 120]  # restart back-off schedule
         consecutive_failures = 0
+        restart_attempts = 0
 
         while not self._zap_watchdog_stop.is_set():
             try:
@@ -556,26 +557,41 @@ class AdvancedVulnScanner:
 
                 if self._is_zap_running():
                     consecutive_failures = 0
+                    restart_attempts = 0
                     self._zap_watchdog_stop.wait(timeout=POLL_INTERVAL)
                     continue
 
-                # ZAP is down — attempt restart
+                # ZAP health check failed
                 consecutive_failures += 1
-                delay_idx = min(consecutive_failures - 1, len(BACKOFF_DELAYS) - 1)
+                if consecutive_failures < FAILURES_BEFORE_RESTART:
+                    logger.debug(
+                        f"[ZAP-WATCHDOG] Health check failed "
+                        f"({consecutive_failures}/{FAILURES_BEFORE_RESTART}), "
+                        f"will retry before restarting"
+                    )
+                    self._zap_watchdog_stop.wait(timeout=POLL_INTERVAL)
+                    continue
+
+                # Confirmed down after multiple checks — attempt restart
+                restart_attempts += 1
+                delay_idx = min(restart_attempts - 1, len(BACKOFF_DELAYS) - 1)
                 logger.warning(
-                    f"[ZAP-WATCHDOG] ZAP daemon not responding "
-                    f"(attempt {consecutive_failures}), restarting..."
+                    f"[ZAP-WATCHDOG] ZAP daemon confirmed down after "
+                    f"{consecutive_failures} checks, restarting "
+                    f"(attempt {restart_attempts})..."
                 )
                 self._zap_busy = True
                 try:
                     if self.start_zap_daemon():
                         logger.info("[ZAP-WATCHDOG] ZAP daemon restarted successfully")
                         consecutive_failures = 0
+                        restart_attempts = 0
                     else:
                         backoff = BACKOFF_DELAYS[delay_idx]
                         logger.warning(
                             f"[ZAP-WATCHDOG] Restart failed, retrying in {backoff}s"
                         )
+                        consecutive_failures = 0  # reset so we wait again
                         self._zap_watchdog_stop.wait(timeout=backoff)
                         continue
                 finally:
@@ -780,9 +796,29 @@ class AdvancedVulnScanner:
             return None
 
     def _generate_api_key(self) -> str:
-        """Generate a random API key for ZAP"""
+        """Get or generate a stable API key for ZAP.
+
+        Persists the key to a file so that if multiple scanner instances
+        exist (e.g. due to race conditions), they all use the same key
+        and can share a single ZAP daemon without fighting.
+        """
         import secrets
-        return secrets.token_hex(self.ZAP_API_KEY_LENGTH // 2)
+        key_file = os.path.join(self.shared_data.currentdir, 'data', '.zap_api_key')
+        try:
+            os.makedirs(os.path.dirname(key_file), exist_ok=True)
+            if os.path.exists(key_file):
+                stored = open(key_file, 'r').read().strip()
+                if len(stored) >= 16:
+                    return stored
+        except Exception:
+            pass
+        key = secrets.token_hex(self.ZAP_API_KEY_LENGTH // 2)
+        try:
+            with open(key_file, 'w') as f:
+                f.write(key)
+        except Exception:
+            pass
+        return key
     
     def _detect_tools(self):
         """Detect available security tools"""
@@ -1576,21 +1612,28 @@ class AdvancedVulnScanner:
     # =========================================================================
 
     def _is_zap_running(self) -> bool:
-        """Check if ZAP daemon is running and responsive"""
-        try:
-            url = f"{self._zap_base_url}/JSON/core/view/version/?apikey={self._zap_api_key}"
-            req = urllib.request.Request(url, method='GET')
-            with urllib.request.urlopen(req, timeout=5) as response:
-                return response.status == 200
-        except urllib.error.HTTPError as e:
-            # ZAP is running but API key is wrong (401/403) - it's still running
-            if e.code in (401, 403):
-                logger.warning(f"ZAP is running but API key may be incorrect (HTTP {e.code}). "
-                              f"Try disabling the API key in ZAP or setting it to match.")
-                return True
-            return False
-        except Exception:
-            return False
+        """Check if ZAP daemon is running and responsive.
+
+        Uses two attempts with generous timeouts to tolerate Java GC pauses
+        on ARM/Raspberry Pi where ZAP can be temporarily unresponsive.
+        """
+        for attempt in range(2):
+            try:
+                url = f"{self._zap_base_url}/JSON/core/view/version/?apikey={self._zap_api_key}"
+                req = urllib.request.Request(url, method='GET')
+                with urllib.request.urlopen(req, timeout=10) as response:
+                    return response.status == 200
+            except urllib.error.HTTPError as e:
+                # ZAP is running but API key is wrong (401/403) - it's still running
+                if e.code in (401, 403):
+                    return True
+                return False
+            except Exception:
+                if attempt == 0:
+                    time.sleep(2)  # Brief pause before retry
+                    continue
+                return False
+        return False
 
     def _zap_api_call(self, endpoint: str, params: Dict = None) -> Dict:
         """Make a ZAP API call and return JSON response"""
@@ -1757,13 +1800,28 @@ class AdvancedVulnScanner:
         else:
             logger.info("[ZAP-CLEANUP] No tracked ZAP process reference")
 
-        # 2. Check if port is occupied and kill any orphan process
+        # 2. Check if port is occupied — but don't kill a healthy ZAP
         port_occupied = self._is_port_in_use(port)
-        if port_occupied:
-            logger.warning(f"[ZAP-CLEANUP] Port {port} is still in use — killing occupying process")
-        else:
+        if not port_occupied:
             logger.info(f"[ZAP-CLEANUP] Port {port} is free")
-            return  # Nothing else to clean up
+            return  # Nothing to clean up
+
+        # Port is occupied — check if it's a responsive ZAP before killing
+        try:
+            url = f"http://127.0.0.1:{port}/JSON/core/view/version/"
+            req = urllib.request.Request(url, method='GET')
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    logger.info(f"[ZAP-CLEANUP] Port {port} has a healthy ZAP — keeping it alive")
+                    return
+        except urllib.error.HTTPError as e:
+            if e.code in (401, 403):
+                logger.info(f"[ZAP-CLEANUP] Port {port} has a running ZAP (HTTP {e.code}) — keeping it alive")
+                return
+        except Exception:
+            pass  # Not a responsive ZAP — proceed with kill
+
+        logger.warning(f"[ZAP-CLEANUP] Port {port} is in use by unresponsive process — killing it")
 
         try:
             import sys
@@ -1816,10 +1874,20 @@ class AdvancedVulnScanner:
         except Exception as e:
             logger.warning(f"[ZAP-CLEANUP] Port cleanup failed: {e}")
 
-        # 3. Brief wait for port to be released by OS
+        # 3. Remove ZAP home directory lock file to prevent "home directory already in use"
+        for zap_home in ['/root/.ZAP', os.path.expanduser('~/.ZAP')]:
+            lock_file = os.path.join(zap_home, '.ZAP_D_LOCK')
+            if os.path.exists(lock_file):
+                try:
+                    os.remove(lock_file)
+                    logger.info(f"[ZAP-CLEANUP] Removed stale lock file: {lock_file}")
+                except OSError as e:
+                    logger.warning(f"[ZAP-CLEANUP] Could not remove lock file {lock_file}: {e}")
+
+        # 4. Brief wait for port to be released by OS
         time.sleep(1)
 
-        # 4. Verify port is now free
+        # 5. Verify port is now free
         if self._is_port_in_use(port):
             logger.error(f"[ZAP-CLEANUP] Port {port} STILL in use after cleanup — ZAP restart may fail")
         else:
@@ -1869,9 +1937,10 @@ class AdvancedVulnScanner:
                             return True
                 except Exception:
                     pass
-                logger.error("[ZAP-START] ZAP is running with a different API key. "
-                            "Stop ZAP and let Ragnar start it, or configure matching API keys.")
-                return False
+                # ZAP is running with a different key — regenerate ours to match
+                logger.warning("[ZAP-START] ZAP running with unknown API key — "
+                               "regenerating key and restarting to sync")
+                self._zap_api_key = self._generate_api_key()
 
         logger.info("[ZAP-START] ZAP API not responding — running cleanup...")
         # ZAP is not responding — clean up any dead process / port lock
