@@ -86,7 +86,11 @@ class Ragnar:
             
             if not self.shared_data.manual_mode:
                 self.check_and_start_orchestrator()
-            time.sleep(10)  # Main loop idle waiting
+            # Sleep in 1-second chunks so should_exit is checked quickly
+            for _ in range(10):
+                if self.shared_data.should_exit:
+                    break
+                time.sleep(1)
         
         logger.info("Ragnar main loop exited")
 
@@ -134,7 +138,7 @@ class Ragnar:
         if self.orchestrator_thread is not None and self.orchestrator_thread.is_alive():
             logger.info("Stopping Orchestrator thread...")
             self.shared_data.orchestrator_should_exit = True
-            self.orchestrator_thread.join()
+            self.orchestrator_thread.join(timeout=3)
             logger.info("Orchestrator thread stopped.")
             self.shared_data.ragnarorch_status = "IDLE"
             self.shared_data.ragnarstatustext2 = ""

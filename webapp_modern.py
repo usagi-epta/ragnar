@@ -1050,6 +1050,10 @@ def _execute_pwn_mode_switch(target_mode: str) -> None:
     if target_mode == 'pwnagotchi':
         _ensure_pwn_launcher()
 
+        # Stop the display loop FIRST so it doesn't overwrite the transition message.
+        # E-paper retains its image without power, so the message stays visible.
+        shared_data.display_should_exit = True
+
         # Show transition message on e-paper before Ragnar stops.
         # Run in a thread with a timeout so a blocked SPI bus never hangs the swap.
         _epd_t = threading.Thread(target=_show_epaper_transition, args=("Switching to Pwnagotchi...",), daemon=True)
@@ -1077,8 +1081,8 @@ def _execute_pwn_mode_switch(target_mode: str) -> None:
                 ['systemd-run', '--no-block', '--collect',
                  '--unit=ragnar-to-pwnagotchi-swap',
                  'bash', '-c',
-                 'sleep 1 && systemctl stop ragnar.service'
-                 ' && sleep 3'
+                 'systemctl stop ragnar.service'
+                 ' && sleep 1'
                  ' && systemctl start bettercap.service'
                  ' && systemctl start pwnagotchi.service'],
                 stdout=subprocess.DEVNULL,

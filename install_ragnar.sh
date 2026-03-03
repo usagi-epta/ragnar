@@ -1009,7 +1009,7 @@ StandardError=inherit
 Restart=always
 RestartSec=3
 User=root
-TimeoutStopSec=10
+TimeoutStopSec=5
 KillMode=mixed
 
 # Check open files and restart if it reached the limit (ulimit -n buffer of 10000)
