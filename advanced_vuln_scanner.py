@@ -463,6 +463,7 @@ class AdvancedVulnScanner:
         self._zap_watchdog_stop = threading.Event()
         self._zap_user_stopped = False  # True when user explicitly stops ZAP
         self._zap_busy = False  # True during startup or active scan — suppresses watchdog
+        self._zap_start_lock = threading.Lock()  # Prevents concurrent start_zap_daemon calls
 
         # Check capabilities
         caps = get_server_capabilities(shared_data)
@@ -1800,7 +1801,12 @@ class AdvancedVulnScanner:
         else:
             logger.info("[ZAP-CLEANUP] No tracked ZAP process reference")
 
-        # 2. Check if port is occupied — but don't kill a healthy ZAP
+        # 2. Always remove stale ZAP lock files BEFORE checking port.
+        # The lock file persists even after ZAP crashes / is killed,
+        # causing "home directory already in use" on the next start.
+        self._remove_zap_lock_files()
+
+        # 3. Check if port is occupied — but don't kill a healthy ZAP
         port_occupied = self._is_port_in_use(port)
         if not port_occupied:
             logger.info(f"[ZAP-CLEANUP] Port {port} is free")
@@ -1874,20 +1880,13 @@ class AdvancedVulnScanner:
         except Exception as e:
             logger.warning(f"[ZAP-CLEANUP] Port cleanup failed: {e}")
 
-        # 3. Remove ZAP home directory lock file to prevent "home directory already in use"
-        for zap_home in ['/root/.ZAP', os.path.expanduser('~/.ZAP')]:
-            lock_file = os.path.join(zap_home, '.ZAP_D_LOCK')
-            if os.path.exists(lock_file):
-                try:
-                    os.remove(lock_file)
-                    logger.info(f"[ZAP-CLEANUP] Removed stale lock file: {lock_file}")
-                except OSError as e:
-                    logger.warning(f"[ZAP-CLEANUP] Could not remove lock file {lock_file}: {e}")
+        # 4. Remove lock files again after kill (in case the killed process recreated one)
+        self._remove_zap_lock_files()
 
-        # 4. Brief wait for port to be released by OS
+        # 5. Brief wait for port to be released by OS
         time.sleep(1)
 
-        # 5. Verify port is now free
+        # 6. Verify port is now free
         if self._is_port_in_use(port):
             logger.error(f"[ZAP-CLEANUP] Port {port} STILL in use after cleanup — ZAP restart may fail")
         else:
@@ -1904,12 +1903,52 @@ class AdvancedVulnScanner:
         except Exception:
             return False
 
+    def _remove_zap_lock_files(self):
+        """Remove ZAP home directory lock files to prevent 'home directory already in use'.
+
+        ZAP creates a .ZAP_D_LOCK file in its home directory which persists
+        even after a crash or kill.  This prevents new instances from starting.
+        """
+        for zap_home in ['/root/.ZAP', os.path.expanduser('~/.ZAP')]:
+            lock_file = os.path.join(zap_home, '.ZAP_D_LOCK')
+            if os.path.exists(lock_file):
+                try:
+                    os.remove(lock_file)
+                    logger.info(f"[ZAP-CLEANUP] Removed stale lock file: {lock_file}")
+                except OSError as e:
+                    logger.warning(f"[ZAP-CLEANUP] Could not remove lock file {lock_file}: {e}")
+
     def start_zap_daemon(self, port: int = None) -> bool:
         """Start ZAP in daemon mode.
 
         Handles stale/crashed ZAP processes by cleaning up zombies and
         freeing locked ports before attempting to start a fresh instance.
+        Thread-safe: uses _zap_start_lock to prevent concurrent starts.
         """
+        # Serialize all startup attempts so the watchdog and scan flow
+        # never race to start/kill ZAP concurrently.
+        acquired = self._zap_start_lock.acquire(timeout=200)
+        if not acquired:
+            logger.warning("[ZAP-START] Could not acquire start lock (another start in progress)")
+            # Another thread is already starting ZAP — check if it succeeded
+            return self._is_zap_running()
+        try:
+            return self._start_zap_daemon_inner(port)
+        finally:
+            self._zap_start_lock.release()
+
+    def _start_zap_daemon_inner(self, port: int = None) -> bool:
+        """Inner startup logic, called under _zap_start_lock."""
+        # Suppress watchdog restarts while we're starting
+        was_busy = self._zap_busy
+        self._zap_busy = True
+        try:
+            return self._start_zap_daemon_impl(port)
+        finally:
+            self._zap_busy = was_busy
+
+    def _start_zap_daemon_impl(self, port: int = None) -> bool:
+        """Actual ZAP daemon startup implementation."""
         # Clear the user-stopped flag so the watchdog resumes guarding
         self._zap_user_stopped = False
         logger.info("[ZAP-START] ═══════════════════════════════════════════")
@@ -2188,6 +2227,8 @@ class AdvancedVulnScanner:
                 self._zap_process.wait(timeout=10)
                 self._zap_process = None
 
+            # Always clean up lock files so the next start won't fail
+            self._remove_zap_lock_files()
             logger.info("ZAP daemon stopped")
             return True
 
@@ -2196,6 +2237,7 @@ class AdvancedVulnScanner:
             if self._zap_process:
                 self._zap_process.kill()
                 self._zap_process = None
+            self._remove_zap_lock_files()
             return False
 
     def get_zap_status(self) -> Dict[str, Any]:
@@ -4336,7 +4378,36 @@ class AdvancedVulnScanner:
             self._scan_log(scan_id, 'warning', "Active scan phase timed out")
 
     def _fetch_zap_alerts(self, scan_id: str, target: str):
-        """Fetch all ZAP alerts and convert to VulnerabilityFinding"""
+        """Fetch all ZAP alerts and convert to VulnerabilityFinding.
+
+        If ZAP is down when we try to fetch, restart it and retry up to 3 times.
+        This prevents losing scan results when ZAP crashes between scan completion
+        and alert retrieval.
+        """
+        MAX_RETRIES = 3
+        last_err = None
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                self._fetch_zap_alerts_inner(scan_id, target)
+                return  # Success
+            except Exception as e:
+                last_err = e
+                self._scan_log(scan_id, 'warning',
+                               f"Alert fetch attempt {attempt}/{MAX_RETRIES} failed: {e}")
+                if attempt < MAX_RETRIES:
+                    # Try to restart ZAP if it's down
+                    if not self._is_zap_running():
+                        self._scan_log(scan_id, 'info',
+                                       "ZAP not responding — restarting before retry...")
+                        self.start_zap_daemon()
+                        time.sleep(5)  # Give ZAP time to load session
+                    else:
+                        time.sleep(2)
+        # All retries exhausted
+        raise RuntimeError(f"Failed to fetch ZAP alerts after {MAX_RETRIES} attempts: {last_err}") from last_err
+
+    def _fetch_zap_alerts_inner(self, scan_id: str, target: str):
+        """Inner alert fetch — called with retry wrapper."""
         try:
             # Parse target to get host for flexible matching
             parsed_target = urllib.parse.urlparse(target)
