@@ -45,6 +45,149 @@ let releaseGateResolver = null;
 let releaseGatePendingPromise = null;
 let threatIntelStatusFilter = 'open';
 
+// ── Credential Table state ──────────────────────────────────────
+let credentialsCache = null;
+let credServiceFilter = 'all';
+let credIPSearch = '';
+let credSortCol = 'ip';
+let credSortAsc = true;
+
+const CRED_SERVICE_PORTS = { ssh: 22, smb: 445, ftp: 21, telnet: 23, rdp: 3389, sql: 3306 };
+const CRED_SERVICE_COLORS = {
+    ssh:    'bg-blue-900 text-blue-300',
+    smb:    'bg-purple-900 text-purple-300',
+    ftp:    'bg-yellow-900 text-yellow-300',
+    telnet: 'bg-orange-900 text-orange-300',
+    rdp:    'bg-pink-900 text-pink-300',
+    sql:    'bg-green-900 text-green-300',
+};
+
+async function loadCredentials(force = false) {
+    if (!force && credentialsCache) { displayCredentials(credentialsCache); return; }
+    try {
+        const data = await fetchAPI('/api/credentials');
+        // Flatten into unified array
+        const flat = [];
+        Object.entries(data).forEach(([svc, entries]) => {
+            (entries || []).forEach(e => flat.push({ ...e, service: svc }));
+        });
+        credentialsCache = flat;
+        displayCredentials(flat);
+    } catch(err) {
+        const tbody = document.getElementById('cred-table-body');
+        if (tbody) tbody.innerHTML =
+            `<tr><td colspan="6" class="py-8 text-center text-red-400">Error loading credentials: ${escapeHtml(err.message)}</td></tr>`;
+    }
+}
+
+function onCredSearch(val) { credIPSearch = val.trim().toLowerCase(); displayCredentials(credentialsCache); }
+
+function filterCredsByService(svc) {
+    credServiceFilter = svc;
+    document.querySelectorAll('.cred-svc-btn').forEach(b => {
+        const active = b.getAttribute('data-svc') === svc;
+        b.classList.toggle('bg-Ragnar-600', active);
+        b.classList.toggle('bg-slate-700', !active);
+        b.classList.toggle('hover:bg-slate-600', !active);
+    });
+    displayCredentials(credentialsCache);
+}
+
+function sortCredsBy(col) {
+    if (credSortCol === col) { credSortAsc = !credSortAsc; } else { credSortCol = col; credSortAsc = true; }
+    ['ip','service','username'].forEach(c => {
+        const el = document.getElementById(`cred-sort-${c}`);
+        if (el) el.textContent = c === credSortCol ? (credSortAsc ? '↑' : '↓') : '';
+    });
+    displayCredentials(credentialsCache);
+}
+
+function displayCredentials(data) {
+    if (!data) return;
+    const tbody = document.getElementById('cred-table-body');
+    const statsEl = document.getElementById('cred-stats');
+    const countEl = document.getElementById('cred-table-count');
+    if (!tbody) return;
+
+    // Build stats
+    const svcCounts = {};
+    data.forEach(c => { svcCounts[c.service] = (svcCounts[c.service] || 0) + 1; });
+    const totalCreds = data.length;
+    let statsHtml = `<div class="bg-slate-800 rounded-lg p-3 text-center"><div class="text-2xl font-bold">${totalCreds}</div><div class="text-xs text-gray-400 mt-1">Total</div></div>`;
+    Object.entries(CRED_SERVICE_PORTS).forEach(([svc]) => {
+        const count = svcCounts[svc] || 0;
+        statsHtml += `<div class="bg-slate-800 rounded-lg p-3 text-center cursor-pointer hover:bg-slate-700 transition-colors" onclick="filterCredsByService('${svc}')">
+            <div class="text-2xl font-bold ${count > 0 ? 'text-green-400' : 'text-gray-500'}">${count}</div>
+            <div class="text-xs text-gray-400 mt-1 uppercase">${svc}</div>
+        </div>`;
+    });
+    if (statsEl) statsEl.innerHTML = statsHtml;
+
+    // Filter
+    let rows = data;
+    if (credServiceFilter !== 'all') rows = rows.filter(r => r.service === credServiceFilter);
+    if (credIPSearch) rows = rows.filter(r => (r.ip || '').toLowerCase().includes(credIPSearch));
+
+    // Sort
+    rows = [...rows].sort((a, b) => {
+        const av = (a[credSortCol] || '').toLowerCase();
+        const bv = (b[credSortCol] || '').toLowerCase();
+        return credSortAsc ? av.localeCompare(bv) : bv.localeCompare(av);
+    });
+
+    if (rows.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" class="py-8 text-center text-gray-400">No credentials match current filters</td></tr>`;
+        if (countEl) countEl.textContent = '';
+        return;
+    }
+
+    tbody.innerHTML = rows.map(r => {
+        const port = CRED_SERVICE_PORTS[r.service] || '—';
+        const badge = CRED_SERVICE_COLORS[r.service] || 'bg-slate-700 text-gray-300';
+        const pwDisplay = r.password ? `<span class="font-mono">${escapeHtml(r.password)}</span>` : '<span class="text-gray-500 italic">none</span>';
+        const safePw = r.password ? escapeHtml(r.password).replace(/'/g, '&#39;') : '';
+        return `<tr class="border-b border-slate-800 hover:bg-slate-800 transition-colors">
+            <td class="py-3 px-4 font-mono text-sm">${escapeHtml(r.ip || '—')}</td>
+            <td class="py-3 px-4"><span class="px-2 py-0.5 rounded text-xs font-semibold uppercase ${badge}">${escapeHtml(r.service)}</span></td>
+            <td class="py-3 px-4 text-gray-400">${port}</td>
+            <td class="py-3 px-4 font-mono">${escapeHtml(r.username || '—')}</td>
+            <td class="py-3 px-4">${pwDisplay}</td>
+            <td class="py-3 px-4">
+                ${r.password ? `<button onclick="copyCredToClipboard('${safePw}')" class="text-xs text-blue-400 hover:text-blue-300 px-2 py-1 rounded hover:bg-slate-700 transition-colors" title="Copy password">Copy</button>` : ''}
+            </td>
+        </tr>`;
+    }).join('');
+
+    if (countEl) countEl.textContent = `Showing ${rows.length} of ${data.length} credential${data.length !== 1 ? 's' : ''}`;
+}
+
+function copyCredToClipboard(text) {
+    navigator.clipboard.writeText(text).then(() => {
+        addConsoleMessage('Password copied to clipboard', 'success');
+    }).catch(() => {
+        addConsoleMessage('Copy failed — check browser permissions', 'warning');
+    });
+}
+
+function exportCredentialsCSV() {
+    if (!credentialsCache || credentialsCache.length === 0) {
+        addConsoleMessage('No credentials to export', 'warning');
+        return;
+    }
+    const csvRows = [['IP', 'Service', 'Port', 'Username', 'Password']];
+    credentialsCache.forEach(r => {
+        csvRows.push([r.ip || '', r.service || '', CRED_SERVICE_PORTS[r.service] || '', r.username || '', r.password || '']);
+    });
+    const csv = csvRows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ragnar_credentials_${new Date().toISOString().slice(0,10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+}
+
 const configMetadata = {
     manual_mode: {
         label: "Pentest Mode",
@@ -937,6 +1080,9 @@ async function loadTabData(tabName) {
         case 'adv-vuln':
             loadAdvancedVulnData(); // Non-blocking - tab shows immediately, data fills in
             break;
+        case 'credentials':
+            loadCredentials();
+            break;
     }
 }
 
@@ -966,7 +1112,14 @@ async function loadDashboardData() {
         if (data) {
             // Update status block immediately
             updateDashboardStatus(data);
-            await refreshDashboardStatsForCurrentSelection({ forceRefresh: true, fallbackData: data });
+            // Only fetch network-specific stats if a specific network is selected;
+            // otherwise /api/dashboard/quick already has the correct data (instant).
+            const { network } = getSelectedDashboardNetworkKey();
+            if (network) {
+                await refreshDashboardStatsForCurrentSelection({ forceRefresh: true, fallbackData: data });
+            } else {
+                updateDashboardStats(data);
+            }
         }
         
         // Load AI insights if configured
@@ -2416,15 +2569,118 @@ function renderHostRow(normalized) {
         <td class="py-3 px-4 text-sm" data-label="Vulnerabilities">${formatVulnerabilityCell(normalized)}</td>
         <td class="py-3 px-4 text-sm" data-label="Last Scan">${formatLastScanCell(normalized.lastScan)}</td>
         <td class="py-3 px-4" data-label="Actions">
-                <button onclick="triggerDeepScan('${normalized.ip}', { mode: 'full' })" 
+                <button onclick="triggerDeepScan('${normalized.ip}', { mode: 'full' })"
                     id="deep-scan-btn-${normalized.ip.replace(/\./g, '-')}"
                     data-scan-status="idle"
                     class="deep-scan-button bg-purple-600 hover:bg-purple-700 text-white text-xs px-3 py-1 rounded transition-all duration-300"
                     title="Scan all 65535 ports with TCP connect (-sT). IP: ${normalized.ip}">
                 Deep Scan
             </button>
+            <button onclick="openHostPanel('${normalized.ip}')" class="bg-slate-600 hover:bg-slate-500 text-white text-xs px-3 py-1 rounded transition-colors ml-1" title="View host details">
+                Details
+            </button>
         </td>
     `;
+}
+
+// ── Host Detail Panel ───────────────────────────────────────────
+function openHostPanel(ip) {
+    const panel = document.getElementById('host-detail-panel');
+    const overlay = document.getElementById('host-detail-overlay');
+    if (!panel || !overlay) return;
+
+    // Show panel immediately with loading state
+    document.getElementById('hdp-ip').textContent = ip;
+    document.getElementById('hdp-hostname').textContent = 'Loading...';
+    document.getElementById('hdp-status').textContent = '—';
+    document.getElementById('hdp-mac').textContent = '—';
+    document.getElementById('hdp-lastseen').textContent = '—';
+    document.getElementById('hdp-portcount').textContent = '—';
+    document.getElementById('hdp-ports').innerHTML = '<span class="text-gray-400 text-sm">Loading...</span>';
+    document.getElementById('hdp-creds').innerHTML = '<p class="text-gray-400 text-sm">Loading...</p>';
+    document.getElementById('hdp-attacks').innerHTML = '<p class="text-gray-400 text-sm">Loading...</p>';
+    document.getElementById('hdp-vuln-section').classList.add('hidden');
+
+    overlay.classList.remove('hidden');
+    panel.classList.remove('translate-x-full');
+
+    networkAwareFetch(`/api/host/${encodeURIComponent(ip)}`)
+        .then(r => r.json())
+        .then(data => renderHostPanel(data))
+        .catch(err => {
+            document.getElementById('hdp-hostname').textContent = 'Error loading data';
+        });
+}
+
+function closeHostPanel() {
+    const panel = document.getElementById('host-detail-panel');
+    const overlay = document.getElementById('host-detail-overlay');
+    if (panel) panel.classList.add('translate-x-full');
+    if (overlay) overlay.classList.add('hidden');
+}
+
+function renderHostPanel(data) {
+    const statusColors = { alive: 'text-green-400', degraded: 'text-yellow-400', unknown: 'text-gray-400' };
+
+    document.getElementById('hdp-ip').textContent = data.ip || '—';
+    document.getElementById('hdp-hostname').textContent = data.hostname || 'No hostname';
+    document.getElementById('hdp-status').innerHTML = `<span class="${statusColors[data.status] || 'text-gray-400'}">${data.status || 'unknown'}</span>`;
+    document.getElementById('hdp-mac').textContent = data.mac || '—';
+    document.getElementById('hdp-lastseen').textContent = data.last_seen || '—';
+    document.getElementById('hdp-portcount').textContent = `${(data.ports || []).length} port${(data.ports||[]).length !== 1 ? 's' : ''}`;
+
+    // Ports
+    const portsEl = document.getElementById('hdp-ports');
+    if (data.ports && data.ports.length > 0) {
+        portsEl.innerHTML = data.ports.map(p =>
+            `<span class="px-2 py-1 bg-slate-700 rounded text-xs font-mono">${escapeHtml(p)}</span>`
+        ).join('');
+    } else {
+        portsEl.innerHTML = '<span class="text-gray-500 text-sm">None detected</span>';
+    }
+
+    // Credentials
+    const credsEl = document.getElementById('hdp-creds');
+    if (data.credentials && data.credentials.length > 0) {
+        const svcColors = { ssh:'bg-blue-900 text-blue-300', smb:'bg-purple-900 text-purple-300', ftp:'bg-yellow-900 text-yellow-300', telnet:'bg-orange-900 text-orange-300', rdp:'bg-pink-900 text-pink-300', sql:'bg-green-900 text-green-300' };
+        credsEl.innerHTML = data.credentials.map(c => `
+            <div class="flex items-center justify-between bg-slate-800 rounded-lg px-3 py-2">
+                <div class="flex items-center gap-2">
+                    <span class="px-1.5 py-0.5 rounded text-xs font-semibold uppercase ${svcColors[c.service] || 'bg-slate-700 text-gray-300'}">${c.service}</span>
+                    <span class="font-mono text-sm">${escapeHtml(c.username || '—')}</span>
+                    <span class="text-gray-500">:</span>
+                    <span class="font-mono text-sm text-green-300">${escapeHtml(c.password || '—')}</span>
+                </div>
+            </div>`).join('');
+    } else {
+        credsEl.innerHTML = '<p class="text-gray-500 text-sm">No credentials found</p>';
+    }
+
+    // Attack logs
+    const attacksEl = document.getElementById('hdp-attacks');
+    if (data.attack_logs && data.attack_logs.length > 0) {
+        const statusC = { success:'text-green-400', failed:'text-red-400', timeout:'text-yellow-400' };
+        attacksEl.innerHTML = data.attack_logs.map(a => `
+            <div class="bg-slate-800 rounded-lg px-3 py-2 text-xs">
+                <div class="flex items-center justify-between mb-1">
+                    <span class="font-semibold ${statusC[a.status] || 'text-gray-400'}">${a.attack_type}</span>
+                    <span class="text-gray-500">${a.timestamp}</span>
+                </div>
+                ${a.message ? `<p class="text-gray-300">${escapeHtml(a.message)}</p>` : ''}
+            </div>`).join('');
+    } else {
+        attacksEl.innerHTML = '<p class="text-gray-500 text-sm">No attack history</p>';
+    }
+
+    // Vuln summary
+    const vulnSection = document.getElementById('hdp-vuln-section');
+    const vulnEl = document.getElementById('hdp-vuln');
+    if (data.vuln_summary) {
+        vulnEl.textContent = data.vuln_summary;
+        vulnSection.classList.remove('hidden');
+    } else {
+        vulnSection.classList.add('hidden');
+    }
 }
 
 function updateHostCountDisplay() {
@@ -5603,7 +5859,7 @@ function renderConnectTabMultiInterface(state) {
     const focusInterface = state.focus_interface || '';
     const focusSsid = state.focus_interface_ssid || '';
     const globalEnabled = scanMode === 'multi';
-    pillEl.textContent = globalEnabled ? 'All adapters' : 'Single focus';
+    pillEl.textContent = globalEnabled ? 'Single focus' : 'All adapters';
     pillEl.className = `text-xs px-2 py-1 rounded ${globalEnabled ? 'bg-green-700 text-green-100' : 'bg-amber-700 text-amber-100'}`;
     if (noteEl) {
         const maxAdapters = state.max_interfaces || 1;
@@ -5743,7 +5999,7 @@ async function setMultiInterfaceMode(mode, button) {
     }
     try {
         await postAPI('/api/wifi/scan-control/mode', { mode });
-        addConsoleMessage(mode === 'multi' ? 'Scanning all eligible adapters' : 'Single-adapter focus enabled', 'info');
+        addConsoleMessage(mode === 'multi' ? 'Single focus mode enabled' : 'All adapters mode enabled', 'info');
         await refreshWifiStatus();
     } catch (error) {
         console.error('Unable to update scan mode:', error);
@@ -10571,6 +10827,11 @@ window.exploitVulnerability = exploitVulnerability;
 window.triggerDeepScan = triggerDeepScan;
 window.handleCustomDeepScanRequest = handleCustomDeepScanRequest;
 window.testDeepScan = testDeepScan;
+
+// Host Detail Panel Functions
+window.openHostPanel = openHostPanel;
+window.closeHostPanel = closeHostPanel;
+window.renderHostPanel = renderHostPanel;
 
 // Debug Functions
 window.debugDeepScanStates = function() {

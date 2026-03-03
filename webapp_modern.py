@@ -1050,6 +1050,10 @@ def _execute_pwn_mode_switch(target_mode: str) -> None:
     if target_mode == 'pwnagotchi':
         _ensure_pwn_launcher()
 
+        # Stop the display loop FIRST so it doesn't overwrite the transition message.
+        # E-paper retains its image without power, so the message stays visible.
+        shared_data.display_should_exit = True
+
         # Show transition message on e-paper before Ragnar stops.
         # Run in a thread with a timeout so a blocked SPI bus never hangs the swap.
         _epd_t = threading.Thread(target=_show_epaper_transition, args=("Switching to Pwnagotchi...",), daemon=True)
@@ -1077,8 +1081,8 @@ def _execute_pwn_mode_switch(target_mode: str) -> None:
                 ['systemd-run', '--no-block', '--collect',
                  '--unit=ragnar-to-pwnagotchi-swap',
                  'bash', '-c',
-                 'sleep 1 && systemctl stop ragnar.service'
-                 ' && sleep 3'
+                 'systemctl stop ragnar.service'
+                 ' && python3 -OO /home/ragnar/Ragnar/wipe_epd.py 2>/dev/null; true'
                  ' && systemctl start bettercap.service'
                  ' && systemctl start pwnagotchi.service'],
                 stdout=subprocess.DEVNULL,
@@ -3606,6 +3610,89 @@ def get_network():
             logger.error(f"Error getting network data from SQLite: {e}")
             logger.debug(f"Traceback: {traceback.format_exc()}")
             return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/host/<path:ip>')
+def get_host_detail(ip):
+    """Get all aggregated data for a single host"""
+    try:
+        # Get host base data from DB
+        host_data = None
+        hosts = shared_data.db.get_all_hosts()
+        for h in hosts:
+            if h.get('ip') == ip:
+                host_data = h
+                break
+
+        if not host_data:
+            return jsonify({'error': 'Host not found'}), 404
+
+        ports_str = host_data.get('ports', '')
+        ports = [p.strip() for p in ports_str.split(',') if p.strip()] if ports_str else []
+
+        # Get credentials for this IP across all services
+        all_creds = web_utils.get_all_credentials()
+        host_creds = []
+        for svc, entries in all_creds.items():
+            for e in entries:
+                if e.get('ip') == ip:
+                    host_creds.append({**e, 'service': svc})
+
+        # Get attack logs for this IP (last 30)
+        attack_log_dir = os.path.join(shared_data.logsdir, 'attacks')
+        host_attacks = []
+        if os.path.exists(attack_log_dir):
+            from datetime import datetime, timedelta
+            cutoff = datetime.now() - timedelta(days=30)
+            for lf in sorted(os.listdir(attack_log_dir), reverse=True)[:30]:
+                if not lf.startswith('attacks_') or not lf.endswith('.json'):
+                    continue
+                try:
+                    file_date = datetime.strptime(lf.replace('attacks_','').replace('.json',''), '%Y-%m-%d')
+                    if file_date < cutoff:
+                        continue
+                    with open(os.path.join(attack_log_dir, lf), 'r', encoding='utf-8') as f:
+                        for entry in json.load(f):
+                            if entry.get('target_ip') == ip:
+                                host_attacks.append(entry)
+                except Exception:
+                    continue
+        host_attacks.sort(key=lambda x: x.get('timestamp',''), reverse=True)
+        host_attacks = host_attacks[:30]
+
+        # Get vulnerability file for this IP if it exists
+        vuln_summary = ''
+        vuln_file = os.path.join(shared_data.vulnerabilities_dir, f'vuln_{ip}.txt')
+        if os.path.exists(vuln_file):
+            try:
+                with open(vuln_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    vuln_summary = f.read(4000)  # cap at 4KB
+            except Exception:
+                pass
+
+        return jsonify({
+            'ip': ip,
+            'hostname': host_data.get('hostname', ''),
+            'mac': host_data.get('mac', ''),
+            'status': host_data.get('status', 'unknown'),
+            'ports': ports,
+            'last_seen': host_data.get('last_seen', ''),
+            'notes': host_data.get('notes', ''),
+            'services': {
+                'ssh': host_data.get('ssh_connector', ''),
+                'ftp': host_data.get('ftp_connector', ''),
+                'smb': host_data.get('smb_connector', ''),
+                'telnet': host_data.get('telnet_connector', ''),
+                'rdp': host_data.get('rdp_connector', ''),
+                'sql': host_data.get('sql_connector', ''),
+            },
+            'credentials': host_creds,
+            'attack_logs': host_attacks,
+            'vuln_summary': vuln_summary,
+        })
+    except Exception as e:
+        logger.error(f"Error getting host detail for {ip}: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/credentials')
@@ -11618,13 +11705,19 @@ def get_traffic_host_details(ip):
 # ADVANCED VULNERABILITY SCANNING API ENDPOINTS
 # ============================================================================
 
-# Global advanced vuln scanner instance
+# Global advanced vuln scanner instance (thread-safe singleton)
 _advanced_vuln_scanner_instance = None
+_advanced_vuln_scanner_lock = threading.Lock()
 
 def get_advanced_vuln_scanner():
-    """Get or create advanced vuln scanner instance"""
+    """Get or create advanced vuln scanner instance (thread-safe)"""
     global _advanced_vuln_scanner_instance
-    if _advanced_vuln_scanner_instance is None:
+    if _advanced_vuln_scanner_instance is not None:
+        return _advanced_vuln_scanner_instance
+    with _advanced_vuln_scanner_lock:
+        # Double-check after acquiring lock
+        if _advanced_vuln_scanner_instance is not None:
+            return _advanced_vuln_scanner_instance
         try:
             from advanced_vuln_scanner import AdvancedVulnScanner
             _advanced_vuln_scanner_instance = AdvancedVulnScanner(shared_data)
@@ -13838,8 +13931,15 @@ def run_server(host='0.0.0.0', port=8000, ssl_cert=None, ssl_key=None, https_por
         if use_https:
             logger.info("⚠️  Using self-signed certificate - browser will show security warning")
 
-        # Prime synchronized data before clients connect
-        sync_all_counts()
+        # Synchronize counts in the background so the web server binds
+        # immediately instead of waiting for a full DB scan first.
+        def _deferred_sync():
+            try:
+                sync_all_counts()
+                logger.info("Initial sync_all_counts completed")
+            except Exception as e:
+                logger.error(f"Deferred sync_all_counts error: {e}")
+        socketio.start_background_task(_deferred_sync)
 
         # Start background status broadcaster
         socketio.start_background_task(broadcast_status_updates)
