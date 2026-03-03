@@ -462,6 +462,7 @@ class AdvancedVulnScanner:
         self._zap_base_url = f"http://127.0.0.1:{self._zap_port}"
         self._zap_watchdog_stop = threading.Event()
         self._zap_user_stopped = False  # True when user explicitly stops ZAP
+        self._zap_busy = False  # True during startup or active scan — suppresses watchdog
 
         # Check capabilities
         caps = get_server_capabilities(shared_data)
@@ -549,7 +550,7 @@ class AdvancedVulnScanner:
 
         while not self._zap_watchdog_stop.is_set():
             try:
-                if self._zap_user_stopped:
+                if self._zap_user_stopped or self._zap_busy:
                     self._zap_watchdog_stop.wait(timeout=POLL_INTERVAL)
                     continue
 
@@ -565,16 +566,20 @@ class AdvancedVulnScanner:
                     f"[ZAP-WATCHDOG] ZAP daemon not responding "
                     f"(attempt {consecutive_failures}), restarting..."
                 )
-                if self.start_zap_daemon():
-                    logger.info("[ZAP-WATCHDOG] ZAP daemon restarted successfully")
-                    consecutive_failures = 0
-                else:
-                    backoff = BACKOFF_DELAYS[delay_idx]
-                    logger.warning(
-                        f"[ZAP-WATCHDOG] Restart failed, retrying in {backoff}s"
-                    )
-                    self._zap_watchdog_stop.wait(timeout=backoff)
-                    continue
+                self._zap_busy = True
+                try:
+                    if self.start_zap_daemon():
+                        logger.info("[ZAP-WATCHDOG] ZAP daemon restarted successfully")
+                        consecutive_failures = 0
+                    else:
+                        backoff = BACKOFF_DELAYS[delay_idx]
+                        logger.warning(
+                            f"[ZAP-WATCHDOG] Restart failed, retrying in {backoff}s"
+                        )
+                        self._zap_watchdog_stop.wait(timeout=backoff)
+                        continue
+                finally:
+                    self._zap_busy = False
 
             except Exception as exc:
                 logger.debug(f"[ZAP-WATCHDOG] Error during health check: {exc}")
@@ -2503,6 +2508,14 @@ class AdvancedVulnScanner:
 
     def _run_zap_spider(self, scan_id: str, target: str, options: Dict):
         """Run ZAP spider to discover URLs"""
+        self._zap_busy = True
+        try:
+            self._run_zap_spider_inner(scan_id, target, options)
+        finally:
+            self._zap_busy = False
+
+    def _run_zap_spider_inner(self, scan_id: str, target: str, options: Dict):
+        """Inner spider logic — called with busy-flag protection."""
         if not self._is_zap_running():
             self._scan_log(scan_id, 'warning', "ZAP daemon not responding — attempting to start for spider scan...")
             started = False
@@ -2636,6 +2649,14 @@ class AdvancedVulnScanner:
 
     def _run_zap_active_scan(self, scan_id: str, target: str, options: Dict):
         """Run ZAP active vulnerability scan with strength-aware configuration."""
+        self._zap_busy = True
+        try:
+            self._run_zap_active_scan_inner(scan_id, target, options)
+        finally:
+            self._zap_busy = False
+
+    def _run_zap_active_scan_inner(self, scan_id: str, target: str, options: Dict):
+        """Inner active scan logic — called with busy-flag protection."""
         if not self._is_zap_running():
             self._scan_log(scan_id, 'warning', "ZAP daemon not responding — attempting to start for active scan...")
             started = False
@@ -3216,6 +3237,14 @@ class AdvancedVulnScanner:
         Standard  (3 phases): Spider → AJAX Spider → Active Scan
         Thorough+ (5 phases): Spider → AJAX Spider → Active Scan → ragnar-fuzz → JSON Reflections
         """
+        self._zap_busy = True
+        try:
+            self._run_zap_full_scan_inner(scan_id, target, options)
+        finally:
+            self._zap_busy = False
+
+    def _run_zap_full_scan_inner(self, scan_id: str, target: str, options: Dict):
+        """Inner full scan logic — called with busy-flag protection."""
         if not self._is_zap_running():
             self._scan_log(scan_id, 'warning', "ZAP daemon not responding — attempting to start...")
             # Try up to 2 times (cleanup may need a moment to free the port)
