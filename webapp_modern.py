@@ -1050,6 +1050,10 @@ def _execute_pwn_mode_switch(target_mode: str) -> None:
     if target_mode == 'pwnagotchi':
         _ensure_pwn_launcher()
 
+        # Stop the display loop FIRST so it doesn't overwrite the transition message.
+        # E-paper retains its image without power, so the message stays visible.
+        shared_data.display_should_exit = True
+
         # Show transition message on e-paper before Ragnar stops.
         # Run in a thread with a timeout so a blocked SPI bus never hangs the swap.
         _epd_t = threading.Thread(target=_show_epaper_transition, args=("Switching to Pwnagotchi...",), daemon=True)
@@ -1077,8 +1081,8 @@ def _execute_pwn_mode_switch(target_mode: str) -> None:
                 ['systemd-run', '--no-block', '--collect',
                  '--unit=ragnar-to-pwnagotchi-swap',
                  'bash', '-c',
-                 'sleep 1 && systemctl stop ragnar.service'
-                 ' && sleep 3'
+                 'systemctl stop ragnar.service'
+                 ' && python3 -OO /home/ragnar/Ragnar/wipe_epd.py 2>/dev/null; true'
                  ' && systemctl start bettercap.service'
                  ' && systemctl start pwnagotchi.service'],
                 stdout=subprocess.DEVNULL,
@@ -3606,6 +3610,89 @@ def get_network():
             logger.error(f"Error getting network data from SQLite: {e}")
             logger.debug(f"Traceback: {traceback.format_exc()}")
             return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/host/<path:ip>')
+def get_host_detail(ip):
+    """Get all aggregated data for a single host"""
+    try:
+        # Get host base data from DB
+        host_data = None
+        hosts = shared_data.db.get_all_hosts()
+        for h in hosts:
+            if h.get('ip') == ip:
+                host_data = h
+                break
+
+        if not host_data:
+            return jsonify({'error': 'Host not found'}), 404
+
+        ports_str = host_data.get('ports', '')
+        ports = [p.strip() for p in ports_str.split(',') if p.strip()] if ports_str else []
+
+        # Get credentials for this IP across all services
+        all_creds = web_utils.get_all_credentials()
+        host_creds = []
+        for svc, entries in all_creds.items():
+            for e in entries:
+                if e.get('ip') == ip:
+                    host_creds.append({**e, 'service': svc})
+
+        # Get attack logs for this IP (last 30)
+        attack_log_dir = os.path.join(shared_data.logsdir, 'attacks')
+        host_attacks = []
+        if os.path.exists(attack_log_dir):
+            from datetime import datetime, timedelta
+            cutoff = datetime.now() - timedelta(days=30)
+            for lf in sorted(os.listdir(attack_log_dir), reverse=True)[:30]:
+                if not lf.startswith('attacks_') or not lf.endswith('.json'):
+                    continue
+                try:
+                    file_date = datetime.strptime(lf.replace('attacks_','').replace('.json',''), '%Y-%m-%d')
+                    if file_date < cutoff:
+                        continue
+                    with open(os.path.join(attack_log_dir, lf), 'r', encoding='utf-8') as f:
+                        for entry in json.load(f):
+                            if entry.get('target_ip') == ip:
+                                host_attacks.append(entry)
+                except Exception:
+                    continue
+        host_attacks.sort(key=lambda x: x.get('timestamp',''), reverse=True)
+        host_attacks = host_attacks[:30]
+
+        # Get vulnerability file for this IP if it exists
+        vuln_summary = ''
+        vuln_file = os.path.join(shared_data.vulnerabilities_dir, f'vuln_{ip}.txt')
+        if os.path.exists(vuln_file):
+            try:
+                with open(vuln_file, 'r', encoding='utf-8', errors='ignore') as f:
+                    vuln_summary = f.read(4000)  # cap at 4KB
+            except Exception:
+                pass
+
+        return jsonify({
+            'ip': ip,
+            'hostname': host_data.get('hostname', ''),
+            'mac': host_data.get('mac', ''),
+            'status': host_data.get('status', 'unknown'),
+            'ports': ports,
+            'last_seen': host_data.get('last_seen', ''),
+            'notes': host_data.get('notes', ''),
+            'services': {
+                'ssh': host_data.get('ssh_connector', ''),
+                'ftp': host_data.get('ftp_connector', ''),
+                'smb': host_data.get('smb_connector', ''),
+                'telnet': host_data.get('telnet_connector', ''),
+                'rdp': host_data.get('rdp_connector', ''),
+                'sql': host_data.get('sql_connector', ''),
+            },
+            'credentials': host_creds,
+            'attack_logs': host_attacks,
+            'vuln_summary': vuln_summary,
+        })
+    except Exception as e:
+        logger.error(f"Error getting host detail for {ip}: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/credentials')
@@ -10829,6 +10916,76 @@ def list_files_api():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/files/preview')
+def preview_file_api():
+    """Preview file contents inline — text, CSV, images"""
+    import mimetypes, base64
+    try:
+        file_path = request.args.get('path')
+        if not file_path:
+            return jsonify({'error': 'File path required'}), 400
+
+        # Map virtual path to actual path (same logic as download_file_api)
+        actual_path = ''
+        if file_path.startswith('/data_stolen'):
+            actual_path = shared_data.datastolendir + file_path[12:]
+        elif file_path.startswith('/scan_results'):
+            actual_path = shared_data.scan_results_dir + file_path[13:]
+        elif file_path.startswith('/crackedpwd'):
+            actual_path = shared_data.crackedpwddir + file_path[11:]
+        elif file_path.startswith('/vulnerabilities'):
+            actual_path = shared_data.vulnerabilities_dir + file_path[16:]
+        elif file_path.startswith('/logs'):
+            actual_path = shared_data.datadir + '/logs' + file_path[5:]
+        elif file_path.startswith('/backups'):
+            actual_path = shared_data.backupdir + file_path[8:]
+        elif file_path.startswith('/uploads'):
+            actual_path = shared_data.upload_dir + file_path[8:]
+        else:
+            return jsonify({'error': 'Invalid path'}), 400
+
+        if not os.path.isfile(actual_path):
+            return jsonify({'error': 'File not found'}), 404
+
+        # Security: ensure path doesn't escape allowed dirs
+        actual_path = os.path.realpath(actual_path)
+
+        mime_type, _ = mimetypes.guess_type(actual_path)
+        mime_type = mime_type or 'application/octet-stream'
+        file_size = os.path.getsize(actual_path)
+        ext = os.path.splitext(actual_path)[1].lower()
+
+        TEXT_EXTENSIONS = {'.txt', '.log', '.csv', '.json', '.xml', '.yaml', '.yml',
+                           '.md', '.conf', '.cfg', '.ini', '.nmap', '.gnmap', '.sh', '.py'}
+        IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg'}
+
+        if ext in IMAGE_EXTENSIONS:
+            if file_size > 5 * 1024 * 1024:  # 5MB limit for images
+                return jsonify({'type': 'too_large', 'size': file_size, 'name': os.path.basename(actual_path)})
+            with open(actual_path, 'rb') as f:
+                data = base64.b64encode(f.read()).decode('ascii')
+            return jsonify({'type': 'image', 'mime': mime_type, 'data': data, 'name': os.path.basename(actual_path)})
+
+        elif ext in TEXT_EXTENSIONS or (mime_type and mime_type.startswith('text/')):
+            if file_size > 512 * 1024:  # 512KB limit for text
+                # Return first 512KB with truncation notice
+                with open(actual_path, 'r', encoding='utf-8', errors='replace') as f:
+                    content = f.read(512 * 1024)
+                return jsonify({'type': 'text', 'content': content, 'truncated': True,
+                                'size': file_size, 'name': os.path.basename(actual_path)})
+            with open(actual_path, 'r', encoding='utf-8', errors='replace') as f:
+                content = f.read()
+            return jsonify({'type': 'text', 'content': content, 'truncated': False,
+                            'size': file_size, 'name': os.path.basename(actual_path)})
+        else:
+            return jsonify({'type': 'binary', 'mime': mime_type,
+                            'size': file_size, 'name': os.path.basename(actual_path)})
+
+    except Exception as e:
+        logger.error(f"Error previewing file: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/files/download')
 def download_file_api():
     """Download a file"""
@@ -11712,13 +11869,19 @@ def get_traffic_host_details(ip):
 # ADVANCED VULNERABILITY SCANNING API ENDPOINTS
 # ============================================================================
 
-# Global advanced vuln scanner instance
+# Global advanced vuln scanner instance (thread-safe singleton)
 _advanced_vuln_scanner_instance = None
+_advanced_vuln_scanner_lock = threading.Lock()
 
 def get_advanced_vuln_scanner():
-    """Get or create advanced vuln scanner instance"""
+    """Get or create advanced vuln scanner instance (thread-safe)"""
     global _advanced_vuln_scanner_instance
-    if _advanced_vuln_scanner_instance is None:
+    if _advanced_vuln_scanner_instance is not None:
+        return _advanced_vuln_scanner_instance
+    with _advanced_vuln_scanner_lock:
+        # Double-check after acquiring lock
+        if _advanced_vuln_scanner_instance is not None:
+            return _advanced_vuln_scanner_instance
         try:
             from advanced_vuln_scanner import AdvancedVulnScanner
             _advanced_vuln_scanner_instance = AdvancedVulnScanner(shared_data)
@@ -13932,8 +14095,15 @@ def run_server(host='0.0.0.0', port=8000, ssl_cert=None, ssl_key=None, https_por
         if use_https:
             logger.info("⚠️  Using self-signed certificate - browser will show security warning")
 
-        # Prime synchronized data before clients connect
-        sync_all_counts()
+        # Synchronize counts in the background so the web server binds
+        # immediately instead of waiting for a full DB scan first.
+        def _deferred_sync():
+            try:
+                sync_all_counts()
+                logger.info("Initial sync_all_counts completed")
+            except Exception as e:
+                logger.error(f"Deferred sync_all_counts error: {e}")
+        socketio.start_background_task(_deferred_sync)
 
         # Start background status broadcaster
         socketio.start_background_task(broadcast_status_updates)
