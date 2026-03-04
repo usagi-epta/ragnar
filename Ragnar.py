@@ -115,13 +115,16 @@ class Ragnar:
 
     def start_orchestrator(self):
         """Start the orchestrator thread."""
+        # Always clear manual mode so the main loop will auto-start
+        # the orchestrator when Wi-Fi becomes available
+        self.shared_data.manual_mode = False
+        self.shared_data.orchestrator_should_exit = False
+
         # Use Wi-Fi manager's connection check
         if self.wifi_manager.check_wifi_connection():
             self.shared_data.wifi_connected = True
             if self.orchestrator_thread is None or not self.orchestrator_thread.is_alive():
                 logger.info("Starting Orchestrator thread...")
-                self.shared_data.orchestrator_should_exit = False
-                self.shared_data.manual_mode = False
                 self.orchestrator = Orchestrator()
                 self.orchestrator_thread = threading.Thread(target=self.orchestrator.run)
                 self.orchestrator_thread.start()
@@ -129,7 +132,7 @@ class Ragnar:
             else:
                 logger.info("Orchestrator thread is already running.")
         else:
-            logger.warning("Cannot start Orchestrator: Wi-Fi is not connected.")
+            logger.warning("Cannot start Orchestrator yet: Wi-Fi is not connected. Will auto-start when connected.")
 
     def stop_orchestrator(self):
         """Stop the orchestrator thread."""

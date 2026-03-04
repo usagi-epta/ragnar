@@ -8177,112 +8177,96 @@ async function executeManualAttack() {
 
 async function startOrchestrator() {
     const statusEl = document.getElementById('system-control-status');
-    
-    try {
-        // Show status and start progress
-        if (statusEl) {
-            statusEl.classList.remove('hidden');
-            statusEl.textContent = 'Enabling automation...';
-            statusEl.className = 'text-sm text-blue-600 mt-4';
-        }
-        
-        addConsoleMessage('Enabling automation...', 'info');
-        
-        const data = await postAPI('/api/automation/orchestrator/start', {});
-        
-        if (data.success) {
-            const automationActive = data.automation_enabled !== false;
-            const modeLabelText = automationActive ? 'Auto' : 'Sleeping';
-            const modeClass = automationActive ? 'text-green-400 font-semibold' : 'text-purple-300 font-semibold';
 
-            addConsoleMessage('Automation enabled successfully', 'success');
-            updateElement('Ragnar-mode', modeLabelText);
-            const modeLabel = document.getElementById('Ragnar-mode');
-            if (modeLabel) {
-                modeLabel.className = modeClass;
-            }
-            
-            if (statusEl) {
-                statusEl.textContent = automationActive ? 'Automation enabled - Orchestrator running' : 'Automation queued - waiting for Wi-Fi';
-                statusEl.className = automationActive ? 'text-sm text-green-600 mt-4' : 'text-sm text-yellow-500 mt-4';
-                
-                // Hide status after 3 seconds
-                setTimeout(() => {
-                    if (statusEl) {
-                        statusEl.classList.add('hidden');
-                    }
-                }, 3000);
-            }
-            
-        } else {
-            addConsoleMessage(`Failed to start automatic mode: ${data.message || 'Unknown error'}`, 'error');
-            if (statusEl) {
-                statusEl.textContent = `Error: ${data.message || 'Failed to start automatic mode'}`;
-                statusEl.className = 'text-sm text-red-600 mt-4';
-            }
+    // Show status and start progress
+    if (statusEl) {
+        statusEl.classList.remove('hidden');
+        statusEl.textContent = 'Enabling automation...';
+        statusEl.className = 'text-sm text-blue-600 mt-4';
+    }
+
+    addConsoleMessage('Enabling automation...', 'info');
+
+    const data = await postAPI('/api/automation/orchestrator/start', {});
+
+    if (data.success) {
+        const automationActive = data.automation_enabled !== false;
+        const modeLabelText = automationActive ? 'Auto' : 'Sleeping';
+        const modeClass = automationActive ? 'text-green-400 font-semibold' : 'text-purple-300 font-semibold';
+
+        addConsoleMessage(automationActive ? 'Automation enabled successfully' : 'Automation queued - waiting for connectivity', 'success');
+        updateElement('Ragnar-mode', modeLabelText);
+        const modeLabel = document.getElementById('Ragnar-mode');
+        if (modeLabel) {
+            modeLabel.className = modeClass;
         }
-        
-    } catch (error) {
-        console.error('Error starting orchestrator:', error);
-        addConsoleMessage('Failed to start automatic mode', 'error');
+
         if (statusEl) {
-            statusEl.textContent = `Error: ${error.message}`;
+            statusEl.textContent = automationActive ? 'Automation enabled - Orchestrator running' : 'Automation queued - waiting for connectivity';
+            statusEl.className = automationActive ? 'text-sm text-green-600 mt-4' : 'text-sm text-yellow-500 mt-4';
+
+            // Hide status after 3 seconds
+            setTimeout(() => {
+                if (statusEl) {
+                    statusEl.classList.add('hidden');
+                }
+            }, 3000);
+        }
+
+    } else {
+        addConsoleMessage(`Failed to start automatic mode: ${data.message || 'Unknown error'}`, 'error');
+        if (statusEl) {
+            statusEl.textContent = `Error: ${data.message || 'Failed to start automatic mode'}`;
             statusEl.className = 'text-sm text-red-600 mt-4';
         }
     }
+
+    return data;
 }
 
 async function stopOrchestrator() {
     const statusEl = document.getElementById('system-control-status');
-    
-    try {
-        // Show status and start progress
+
+    // Show status and start progress
+    if (statusEl) {
+        statusEl.classList.remove('hidden');
+        statusEl.textContent = 'Stopping automatic mode...';
+        statusEl.className = 'text-sm text-orange-600 mt-4';
+    }
+
+    addConsoleMessage('Disabling automation...', 'info');
+
+    const data = await postAPI('/api/automation/orchestrator/stop', {});
+
+    if (data.success) {
+        addConsoleMessage('Automation disabled - Orchestrator sleeping', 'warning');
+        updateElement('Ragnar-mode', 'Sleeping');
+        const modeLabel = document.getElementById('Ragnar-mode');
+        if (modeLabel) {
+            modeLabel.className = 'text-purple-300 font-semibold';
+        }
+
         if (statusEl) {
-            statusEl.classList.remove('hidden');
-            statusEl.textContent = 'Stopping automatic mode...';
+            statusEl.textContent = 'Automation disabled - Ragnar is sleeping';
             statusEl.className = 'text-sm text-orange-600 mt-4';
+
+            // Hide status after 3 seconds
+            setTimeout(() => {
+                if (statusEl) {
+                    statusEl.classList.add('hidden');
+                }
+            }, 3000);
         }
-        
-        addConsoleMessage('Disabling automation...', 'info');
-        
-        const data = await postAPI('/api/automation/orchestrator/stop', {});
-        
-        if (data.success) {
-            addConsoleMessage('Automation disabled - Orchestrator sleeping', 'warning');
-            updateElement('Ragnar-mode', 'Sleeping');
-            const modeLabel = document.getElementById('Ragnar-mode');
-            if (modeLabel) {
-                modeLabel.className = 'text-purple-300 font-semibold';
-            }
-            
-            if (statusEl) {
-                statusEl.textContent = 'Automation disabled - Ragnar is sleeping';
-                statusEl.className = 'text-sm text-orange-600 mt-4';
-                
-                // Hide status after 3 seconds
-                setTimeout(() => {
-                    if (statusEl) {
-                        statusEl.classList.add('hidden');
-                    }
-                }, 3000);
-            }
-            
-        } else {
-            addConsoleMessage(`Failed to stop automatic mode: ${data.message || 'Unknown error'}`, 'error');
-            if (statusEl) {
-                statusEl.textContent = `Error: ${data.message || 'Failed to stop automatic mode'}`;
-                statusEl.className = 'text-sm text-red-600 mt-4';
-            }
-        }
-        
-    } catch (error) {
-        console.error('Error stopping orchestrator:', error);
-        addConsoleMessage('Failed to stop automatic mode', 'error');
+
+    } else {
+        addConsoleMessage(`Failed to stop automatic mode: ${data.message || 'Unknown error'}`, 'error');
         if (statusEl) {
-            statusEl.textContent = `Error: ${error.message}`;
+            statusEl.textContent = `Error: ${data.message || 'Failed to stop automatic mode'}`;
             statusEl.className = 'text-sm text-red-600 mt-4';
         }
     }
+
+    return data;
 }
 
 async function triggerNetworkScan() {
@@ -8688,13 +8672,16 @@ async function handleAutomationToggle() {
     button.textContent = action === 'start' ? 'Enabling...' : 'Disabling...';
 
     try {
+        let data;
         if (action === 'start') {
-            await startOrchestrator();
-            updateAutomationToggleButton(true, { force: true });
+            data = await startOrchestrator();
         } else {
-            await stopOrchestrator();
-            updateAutomationToggleButton(false, { force: true });
+            data = await stopOrchestrator();
         }
+
+        // Use the actual server-reported state instead of assuming success
+        const actualEnabled = data && data.success ? Boolean(data.automation_enabled) : !targetStateEnabled;
+        updateAutomationToggleButton(actualEnabled, { force: true });
 
         refreshDashboard().catch(() => {/* best effort */});
     } catch (error) {
