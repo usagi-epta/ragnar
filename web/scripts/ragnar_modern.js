@@ -1082,6 +1082,7 @@ async function loadTabData(tabName) {
             break;
         case 'network-map':
             if (!_mapInitialized) { _mapInitialized = true; loadNetworkMap(); }
+            break;
         case 'credentials':
             loadCredentials();
             break;
