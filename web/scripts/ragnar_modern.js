@@ -15259,7 +15259,10 @@ async function _checkMapAiStatus() {
     try {
         const resp = await networkAwareFetch('/api/ai/status');
         const data = await resp.json();
-        _mapAiAvailable = !!(data.enabled && data.configured);
+        // enabled=true means the AI service is up and working
+        // config_enabled=true means the user wants AI on
+        // Either field being true is sufficient — if AI Insights works, so should classification
+        _mapAiAvailable = !!(data.enabled || (data.config_enabled && data.configured));
         const track = document.getElementById('map-ai-toggle-track');
         if (track) {
             if (_mapAiAvailable) {
@@ -15274,7 +15277,7 @@ async function _checkMapAiStatus() {
         if (wrapper) {
             wrapper.title = _mapAiAvailable ? 'Use GPT-5 Nano to improve device classification' : 'AI not available – enable in Settings';
         }
-    } catch { _mapAiAvailable = false; }
+    } catch(e) { console.warn('AI status check failed:', e); _mapAiAvailable = false; }
 }
 
 function onMapAiToggleClick() {

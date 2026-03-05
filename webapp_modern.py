@@ -14061,7 +14061,7 @@ def get_ai_status():
                 'network_insights': getattr(ai_service, 'network_insights', False),
                 'vulnerability_summaries': getattr(ai_service, 'vulnerability_summaries', False)
             },
-            'configured': bool(getattr(ai_service, 'api_token', None))
+            'configured': bool(getattr(ai_service, 'api_token', None) or getattr(ai_service, 'client', None))
         }
         
         # Include initialization error if present (but skip SDK-related ones)
