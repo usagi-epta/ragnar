@@ -79,14 +79,32 @@ class Display:
         self.scale_factor_x = self.shared_data.scale_factor_x
         self.scale_factor_y = self.shared_data.scale_factor_y
 
-        # Layout stretch for wider displays (e.g. 2.7" 176x264)
-        # On 2.13" (122x250) this is 1.0 - no change
-        # On 2.7" (176x264) push status/comment section down further
-        self.y_stretch = 1.35 if self.scale_factor_x > 1.2 else 1.0
+        # Wide display detection (e.g. 2.7" at 176x264 vs reference 122x250)
+        self.is_wide = self.scale_factor_x > 1.2
+        if self.is_wide:
+            # On wider displays: render at design reference size (122x250) and
+            # centre the content on the physical canvas.  This avoids stretching
+            # icons / character art while using the extra screen real-estate as
+            # a clean border.
+            from shared import DESIGN_REF_WIDTH, DESIGN_REF_HEIGHT
+            self.render_w = DESIGN_REF_WIDTH    # 122
+            self.render_h = DESIGN_REF_HEIGHT   # 250
+            self.x_pad = (self.shared_data.width  - self.render_w) // 2
+            self.y_pad = (self.shared_data.height - self.render_h) // 2
+            # Use 1:1 scale so coordinates match the original 2.13" layout
+            self.scale_factor_x = 1.0
+            self.scale_factor_y = 1.0
+            self.y_stretch = 1.0
+        else:
+            self.render_w = self.shared_data.width
+            self.render_h = self.shared_data.height
+            self.x_pad = 0
+            self.y_pad = 0
+            self.y_stretch = 1.0
 
         # Hardware button support (2.7" HAT has KEY1-KEY4)
         self.button_listener = None
-        if self.scale_factor_x > 1.2 and EPDButtonListener is not None:
+        if self.is_wide and EPDButtonListener is not None:
             self.button_listener = EPDButtonListener(shared_data)
             self.button_listener.start()
 
@@ -1195,6 +1213,17 @@ class Display:
                     continue
 
                 # === PAGE_MAIN: Default Ragnar display ===
+                # On wide displays we render at the original 122x250 design size
+                # and centre the result on the physical canvas (no object stretching).
+                rw = self.render_w   # 122 on 2.7", or physical width on 2.13"
+                rh = self.render_h   # 250 on 2.7", or physical height on 2.13"
+                if self.is_wide:
+                    content = Image.new('1', (rw, rh), 255)
+                    cdraw = ImageDraw.Draw(content)
+                else:
+                    content = image
+                    cdraw = draw
+
                 # Check PiSugar once per frame for title sizing + battery text
                 _pisugar_available = False
                 try:
@@ -1204,26 +1233,23 @@ class Display:
                 except Exception:
                     pass
                 if _pisugar_available:
-                    draw.text((int(40 * self.scale_factor_x), int(6 * self.scale_factor_y)), "RAGNAR", font=self.shared_data.font_viking_sm, fill=0)
+                    cdraw.text((40, 6), "RAGNAR", font=self.shared_data.font_viking_sm, fill=0)
                 else:
-                    draw.text((int(37 * self.scale_factor_x), int(5 * self.scale_factor_y)), "RAGNAR", font=self.shared_data.font_viking, fill=0)
-                draw.text((int(110 * self.scale_factor_x), int(170 * self.scale_factor_y)), self.manual_mode_txt, font=self.shared_data.font_arial14, fill=0)
+                    cdraw.text((37, 5), "RAGNAR", font=self.shared_data.font_viking, fill=0)
+                cdraw.text((110, 170), self.manual_mode_txt, font=self.shared_data.font_arial14, fill=0)
                 
                 # Show AP status or WiFi status in the top-left corner
                 if hasattr(self.shared_data, 'ap_mode_active') and self.shared_data.ap_mode_active:
-                    # Show AP status with client count
-                    ap_text = f"AP"
+                    ap_text = "AP"
                     if hasattr(self.shared_data, 'ap_client_count') and self.shared_data.ap_client_count > 0:
                         ap_text = f"AP:{self.shared_data.ap_client_count}"
-                    draw.text((int(3 * self.scale_factor_x), int(3 * self.scale_factor_y)), ap_text, font=self.shared_data.font_arial9, fill=0)
+                    cdraw.text((3, 3), ap_text, font=self.shared_data.font_arial9, fill=0)
                 elif self.shared_data.wifi_connected:
-                    self.render_wifi_wave_indicator(image, draw)
-                # # # if self.shared_data.bluetooth_active:
-                # # #     image.paste(self.shared_data.bluetooth, (int(23 * self.scale_factor_x), int(4 * self.scale_factor_y)))
+                    self.render_wifi_wave_indicator(content, cdraw)
                 if self.shared_data.pan_connected:
-                    image.paste(self.shared_data.connected, (int(104 * self.scale_factor_x), int(3 * self.scale_factor_y)))
+                    content.paste(self.shared_data.connected, (104, 3))
                 if self.shared_data.usb_active:
-                    image.paste(self.shared_data.usb, (int(90 * self.scale_factor_x), int(4 * self.scale_factor_y)))
+                    content.paste(self.shared_data.usb, (90, 4))
 
                 # Battery percentage (PiSugar) - flush right in header
                 if _pisugar_available:
@@ -1235,60 +1261,69 @@ class Display:
                             bat_text = f"{bat_level}%+" if charging else f"{bat_level}%"
                             bbox = self.shared_data.font_arial9.getbbox(bat_text)
                             text_w = bbox[2] - bbox[0]
-                            tx = self.shared_data.width - text_w - 1
-                            draw.text((tx, int(10 * self.scale_factor_y)),
-                                      bat_text, font=self.shared_data.font_arial9, fill=0)
+                            tx = rw - text_w - 1
+                            cdraw.text((tx, 10), bat_text, font=self.shared_data.font_arial9, fill=0)
                     except Exception:
                         pass
 
-                # ys stretches the status/comment section down on wider displays
-                # Stats rows stay at normal scale, only dividers and status below get stretched
-                ys = self.y_stretch
-                sx = self.scale_factor_x
-                sy = self.scale_factor_y
+                # Stats — all coordinates at original 122x250 design reference
                 stats = [
-                    (self.shared_data.target, (int(8 * sx), int(22 * sy)), (int(28 * sx), int(22 * sy)), str(self.shared_data.targetnbr)),
-                    (self.shared_data.port, (int(47 * sx), int(22 * sy)), (int(67 * sx), int(22 * sy)), str(self.shared_data.portnbr)),
-                    (self.shared_data.vuln, (int(86 * sx), int(22 * sy)), (int(106 * sx), int(22 * sy)), str(self.shared_data.vulnnbr)),
-                    (self.shared_data.cred, (int(8 * sx), int(41 * sy)), (int(28 * sx), int(41 * sy)), str(self.shared_data.crednbr)),
-                    (self.shared_data.money, (int(3 * sx), int(172 * sy)), (int(3 * sx), int(192 * sy)), str(self.shared_data.coinnbr)),
-                    (self.shared_data.level, (int(2 * sx), int(217 * sy)), (int(4 * sx), int(237 * sy)), str(self.shared_data.levelnbr)),
-                    (self.shared_data.zombie, (int(47 * sx), int(41 * sy)), (int(67 * sx), int(41 * sy)), str(self.shared_data.zombiesnbr)),
-                    (self.shared_data.networkkb, (int(102 * sx), int(190 * sy)), (int(102 * sx), int(208 * sy)), str(self.shared_data.networkkbnbr)),
-                    (self.shared_data.data, (int(86 * sx), int(41 * sy)), (int(106 * sx), int(41 * sy)), str(self.shared_data.datanbr)),
-                    (self.shared_data.attacks, (int(100 * sx), int(218 * sy)), (int(102 * sx), int(237 * sy)), str(self.shared_data.attacksnbr)),
+                    (self.shared_data.target,    (8,   22), (28,  22), str(self.shared_data.targetnbr)),
+                    (self.shared_data.port,      (47,  22), (67,  22), str(self.shared_data.portnbr)),
+                    (self.shared_data.vuln,      (86,  22), (106, 22), str(self.shared_data.vulnnbr)),
+                    (self.shared_data.cred,      (8,   41), (28,  41), str(self.shared_data.crednbr)),
+                    (self.shared_data.money,     (3,  172), (3,  192), str(self.shared_data.coinnbr)),
+                    (self.shared_data.level,     (2,  217), (4,  237), str(self.shared_data.levelnbr)),
+                    (self.shared_data.zombie,    (47,  41), (67,  41), str(self.shared_data.zombiesnbr)),
+                    (self.shared_data.networkkb, (102, 190), (102, 208), str(self.shared_data.networkkbnbr)),
+                    (self.shared_data.data,      (86,  41), (106, 41), str(self.shared_data.datanbr)),
+                    (self.shared_data.attacks,   (100, 218), (102, 237), str(self.shared_data.attacksnbr)),
                 ]
 
                 for img, img_pos, text_pos, text in stats:
-                    image.paste(img, img_pos)
-                    draw.text(text_pos, text, font=self.shared_data.font_arial9, fill=0)
+                    content.paste(img, img_pos)
+                    cdraw.text(text_pos, text, font=self.shared_data.font_arial9, fill=0)
 
                 self.shared_data.update_ragnarstatus()
-                image.paste(self.shared_data.ragnarstatusimage, (int(3 * sx), int(60 * sy * ys)))
-                draw.text((int(35 * sx), int(65 * sy * ys)), self.shared_data.ragnarstatustext, font=self.shared_data.font_arial9, fill=0)
-                draw.text((int(35 * sx), int(75 * sy * ys)), self.shared_data.ragnarstatustext2, font=self.shared_data.font_arial9, fill=0)
+                content.paste(self.shared_data.ragnarstatusimage, (3, 60))
+                cdraw.text((35, 65), self.shared_data.ragnarstatustext, font=self.shared_data.font_arial9, fill=0)
+                cdraw.text((35, 75), self.shared_data.ragnarstatustext2, font=self.shared_data.font_arial9, fill=0)
 
-                # Frise ribbon - hide on wide displays to save vertical space
-                if ys == 1.0:
-                    frise_x, frise_y = self.get_frise_position()
-                    image.paste(self.shared_data.frise, (frise_x, frise_y))
+                # Frise ribbon
+                if self.shared_data.frise is not None:
+                    frise_img = self.shared_data.frise
+                    # Ensure frise fits the render width
+                    if frise_img.width != rw - 2:
+                        frise_img = frise_img.resize((rw - 2, frise_img.height), Image.NEAREST)
+                    content.paste(frise_img, (0, 160))
 
-                draw.rectangle((1, 1, self.shared_data.width - 1, self.shared_data.height - 1), outline=0)
-                draw.line((1, int(20 * sy), self.shared_data.width - 1, int(20 * sy)), fill=0)
-                draw.line((1, int(59 * sy * ys), self.shared_data.width - 1, int(59 * sy * ys)), fill=0)
-                draw.line((1, int(87 * sy * ys), self.shared_data.width - 1, int(87 * sy * ys)), fill=0)
+                # Frame & dividers on the content canvas
+                cdraw.rectangle((1, 1, rw - 1, rh - 1), outline=0)
+                cdraw.line((1, 20, rw - 1, 20), fill=0)
+                cdraw.line((1, 59, rw - 1, 59), fill=0)
+                cdraw.line((1, 87, rw - 1, 87), fill=0)
 
-                lines = self.shared_data.wrap_text(self.shared_data.ragnarsays, self.shared_data.font_arialbold, self.shared_data.width - 4)
-                y_text = int(90 * sy * ys)
+                lines = self.shared_data.wrap_text(self.shared_data.ragnarsays, self.shared_data.font_arialbold, rw - 4)
+                y_text = 90
 
+                # Character image — centred on the content canvas
                 if self.main_image is not None:
-                    image.paste(self.main_image, (self.shared_data.x_center1, self.shared_data.y_bottom1))
+                    cx = (rw - self.main_image.width) // 2
+                    cy = rh - self.main_image.height
+                    content.paste(self.main_image, (cx, cy))
                 else:
                     logger.error("Main image not found in shared_data.")
 
                 for line in lines:
-                    draw.text((int(4 * self.scale_factor_x), y_text), line, font=self.shared_data.font_arialbold, fill=0)
+                    cdraw.text((4, y_text), line, font=self.shared_data.font_arialbold, fill=0)
                     y_text += (self.shared_data.font_arialbold.getbbox(line)[3] - self.shared_data.font_arialbold.getbbox(line)[1]) + 3
+
+                # Compose the final display image
+                if self.is_wide:
+                    # Centre the 122x250 content on the 176x264 canvas
+                    draw.rectangle((0, 0, self.shared_data.width, self.shared_data.height), fill=255)
+                    image.paste(content, (self.x_pad, self.y_pad))
+                    draw.rectangle((1, 1, self.shared_data.width - 1, self.shared_data.height - 1), outline=0)
 
                 if self.screen_reversed:
                     image = image.transpose(Image.Transpose.ROTATE_180)

@@ -1346,9 +1346,10 @@ class SharedData:
             raise
 
     def _get_image_scale(self):
-        """Get the image scale factor for the current display. Returns 1.0 for default 2.13" displays."""
-        sf = getattr(self, 'scale_factor_x', 1.0)
-        return sf if sf > 1.05 else 1.0  # Only scale if display is meaningfully larger
+        """Get the image scale factor for the current display.
+        Always returns 1.0 — icons are drawn at their native size on all displays.
+        Wider displays (e.g. 2.7" 176x264) centre the content instead of stretching."""
+        return 1.0
 
     def load_images(self):
         """Load the images for the e-paper display, scaled for display size."""
