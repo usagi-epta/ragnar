@@ -1081,7 +1081,7 @@ async function loadTabData(tabName) {
             loadAdvancedVulnData(); // Non-blocking - tab shows immediately, data fills in
             break;
         case 'network-map':
-            if (!_mapInitialized) { _mapInitialized = true; loadNetworkMap(); }
+            if (!_mapInitialized) { loadNetworkMap(); }
             break;
         case 'credentials':
             loadCredentials();
@@ -15305,6 +15305,7 @@ async function loadNetworkMap() {
 
     // Check AI availability on first load
     if (!_mapInitialized) {
+        _mapInitialized = true;     // set flag early to prevent re-entry
         await _checkMapAiStatus();
         loadScanSubnets();          // populate subnet badge / panel
     }
