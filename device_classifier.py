@@ -14,15 +14,25 @@ _VENDOR_RULES = {
     # Networking equipment — routers
     "router": [
         "cisco", "ubiquiti", "unifi", "mikrotik", "netgear", "tp-link",
-        "tplink", "tp link", "asus", "linksys", "d-link", "dlink",
+        "tplink", "tp link", "linksys", "d-link", "dlink",
         "zyxel", "aruba", "ruckus", "meraki", "juniper", "fortinet",
         "sonicwall", "pfsense", "opnsense", "edgerouter", "synology router",
         "huawei technolog",  # Huawei networking gear
+        # ASUS router-specific product lines (bare "asus" is too broad —
+        # ASUSTek Computer appears on motherboards, PCs for desktops too)
+        "asus rt-", "asus gt-", "asus rog rapture", "asus zenwifi",
+        "asus lyra", "asus blue cave",
+        # ISP-provided routers / cable gateways
+        "sagemcom", "technicolor", "arris", "calix", "actiontec",
+        "hitron", "sercomm", "arcadyan", "gemtek",
+        # Small-business / travel / cellular routers
+        "draytek", "peplink", "pepwave", "cradlepoint", "teltonika",
+        "gl.inet", "gl-inet",
     ],
     # Access points (often same vendors but specific product lines)
     "access_point": [
         "ubiquiti networks", "aruba networks", "ruckus wireless",
-        "engenius", "cambium",
+        "engenius", "cambium", "mist systems",
     ],
     # WiFi extenders / repeaters
     "extender": [
@@ -44,9 +54,11 @@ _VENDOR_RULES = {
     # cannot distinguish them.  Apple devices are classified via hostname
     # hints, port signatures, and AI fallback instead.
     "phone": [
-        "samsung electro", "google pixel", "oneplus", "xiaomi",
+        "samsung electro", "google pixel", "oneplus", "xiaomi commun",
         "huawei device", "oppo", "vivo", "realme", "motorola",
         "nokia", "sony mobile", "lg electronics", "honor",
+        "nothing technology", "fairphone", "tecno", "infinix",
+        "poco", "redmi",
     ],
     # Tablets
     "tablet": [
@@ -58,11 +70,16 @@ _VENDOR_RULES = {
         "macbook", "thinkpad", "latitude", "elitebook", "probook",
         "pavilion", "inspiron", "xps", "zenbook", "vivobook",
         "ideapad", "yoga", "chromebook", "swift", "aspire",
+        "surface laptop", "razer blade", "rog zephyrus", "tuf gaming",
+        "predator",  # Acer gaming laptops
     ],
     # Printers
     "printer": [
         "hewlett packard", "hp inc", "canon", "brother", "epson",
         "lexmark", "xerox", "kyocera", "ricoh", "konica",
+        "zebra technolog",  # Label / industrial printers
+        "star micronics",   # Receipt printers
+        "oki data",
     ],
     # Security cameras / IP cameras
     "camera": [
@@ -71,6 +88,8 @@ _VENDOR_RULES = {
         "tp-link tapo", "tapo c", "unifi protect",
         "ring cam", "blink", "nest cam", "google nest cam",
         "vivotek", "hanwha", "bosch security",
+        "foscam", "ezviz", "swann", "annke", "trendnet cam",
+        "yi technology", "sricam",
     ],
     # Smart TVs / streaming sticks
     "smart_tv": [
@@ -78,6 +97,7 @@ _VENDOR_RULES = {
         "apple tv", "chromecast", "fire tv", "firestick",
         "nvidia shield", "roku", "vizio", "philips tv",
         "android tv", "webos", "tizen",
+        "skyworth", "xiaomi tv", "mi tv", "lg webos",
     ],
     # Smart speakers / voice assistants
     "speaker": [
@@ -116,6 +136,10 @@ _VENDOR_RULES = {
         "philips lighting", "signify", "ikea of sweden",
         "ring", "wyze", "meross",
         "broadlink", "yeelight", "wemo", "smart",
+        "aqara", "switchbot", "nanoleaf", "lifx", "govee",
+        "tp-link kasa", "kasa", "teckin", "athom",
+        "ewelink", "zemismart", "moes",
+        "hubitat", "home assistant",  # Smart home hubs
     ],
     # NAS / network storage
     "nas": [
@@ -125,34 +149,42 @@ _VENDOR_RULES = {
     # Servers
     "server": [
         "vmware", "supermicro", "dell emc", "hpe proliant",
-        "proxmox", "truenas",
+        "proxmox", "truenas", "unraid", "nutanix",
     ],
     # Workstations / desktops
     "workstation": [
         "dell", "lenovo", "intel corporate", "hewlett", "acer",
         "msi", "gigabyte", "asrock", "asus",
         "microsoft", "surface",
+        # Specific desktop product lines
+        "optiplex", "thinkcentre", "elitedesk", "prodesk",
+        "precision",  # Dell workstations
     ],
     # Raspberry Pi / SBCs
     "sbc": [
         "raspberry", "pi foundation", "orange pi", "banana pi",
         "beaglebone", "odroid", "rock pi", "libre computer",
+        "pine64", "khadas", "radxa", "asus tinker",
     ],
     # Media / entertainment (audio/video equipment)
     "media": [
         "bose", "harman", "bang & olufsen",
         "denon", "marantz", "yamaha",
+        "onkyo", "pioneer", "bluesound", "kef",
+        "cambridge audio", "naim audio",
     ],
-    # Game consoles
+    # Game consoles / VR headsets
     "gaming": [
         "nintendo", "sony interactive", "playstation",
         "microsoft xbox", "valve", "steam deck",
+        "meta platforms", "oculus",  # Meta Quest VR
     ],
     # Connected vehicles / EV chargers
     "vehicle": [
         "tesla", "wallbox", "chargepoint", "easee",
         "zaptec", "evbox", "juice technology",
         "bmw connected", "mercedes me",
+        "myenergi", "pod point", "ohme", "andersen",
     ],
 }
 
@@ -458,6 +490,10 @@ def classify_device_ai(vendor, ports, hostname, mac, ai_service=None,
             "mac-pro": "workstation", "mac-studio": "workstation",
             "iphone": "phone", "ipad": "tablet",
             "apple-watch": "wearable", "applewatch": "wearable",
+            # ASUS router hostnames (product lines that are always routers)
+            "rt-ax": "router", "rt-ac": "router", "rt-n": "router",
+            "gt-ax": "router", "gt-ac": "router",
+            "zenwifi": "router", "asus router": "router",
         }
         for hint, dtype in _STRONG_HOSTNAME_HINTS.items():
             if hint in hostname_lower:
