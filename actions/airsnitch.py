@@ -233,7 +233,7 @@ class AirSnitchRunner:
         """Test GTK Abuse – checks whether victim and attacker receive the same group key."""
         bss_flag = "--same-bss" if same_bss else "--other-bss"
         raw = self._run(
-            [iface_victim, "--check-gtk-shared", iface_attacker,
+            [iface_attacker, "--check-gtk-shared", iface_victim,
              "--no-ssid-check", bss_flag]
         )
         vulnerable = "gtk is shared" in raw["stdout"].lower()
@@ -250,7 +250,7 @@ class AirSnitchRunner:
         """Test Gateway Bouncing – checks IP-layer isolation via the gateway."""
         bss_flag = "--same-bss" if same_bss else "--other-bss"
         raw = self._run(
-            [iface_victim, "--c2c-ip", iface_attacker,
+            [iface_attacker, "--c2c-ip", iface_victim,
              "--no-ssid-check", bss_flag]
         )
         vulnerable = "client to client traffic at ip layer is allowed" in raw["stdout"].lower()
@@ -266,7 +266,7 @@ class AirSnitchRunner:
     ) -> dict:
         """Test Downlink Port Stealing across different access points."""
         raw = self._run(
-            [iface_victim, "--c2c-port-steal", iface_attacker,
+            [iface_attacker, "--c2c-port-steal", iface_victim,
              "--no-ssid-check", "--other-bss", "--server", server]
         )
         vulnerable = "success" in raw["stdout"].lower() or "intercepted" in raw["stdout"].lower()
@@ -283,7 +283,7 @@ class AirSnitchRunner:
     ) -> dict:
         """Test Uplink Port Stealing."""
         bss_flag = "--same-bss" if same_bss else "--other-bss"
-        args = [iface_victim, "--c2c-port-steal-uplink", iface_attacker,
+        args = [iface_attacker, "--c2c-port-steal-uplink", iface_victim,
                 "--no-ssid-check", bss_flag]
         if server:
             args += ["--server", server]
@@ -368,6 +368,25 @@ class AirSnitch:
         tests          = self._cfg("airsnitch_tests",          ["gtk", "gateway", "port_steal_down", "port_steal_up"])
         same_bss       = self._cfg("airsnitch_same_bss",       False)
         server         = self._cfg("airsnitch_server",         "8.8.8.8")
+
+        victim_ssid    = self._cfg("airsnitch_victim_ssid")
+        victim_psk     = self._cfg("airsnitch_victim_psk")
+        attacker_ssid  = self._cfg("airsnitch_attacker_ssid")
+        attacker_psk   = self._cfg("airsnitch_attacker_psk")
+
+        # Write client.conf if credentials are provided
+        if victim_ssid and victim_psk and attacker_ssid and attacker_psk:
+            conf_path = self.runner.research_dir / "client.conf"
+            self.logger.info(f"AirSnitch: writing client.conf to {conf_path}")
+            self.runner.write_client_conf(
+                conf_path,
+                victim_ssid=victim_ssid,
+                victim_psk=victim_psk,
+                attacker_ssid=attacker_ssid,
+                attacker_psk=attacker_psk,
+            )
+        else:
+            self.logger.info("AirSnitch: no SSID/PSK configured – using existing client.conf")
 
         self.logger.info(
             f"AirSnitch: victim={iface_victim} attacker={iface_attacker} "
