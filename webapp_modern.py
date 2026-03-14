@@ -14953,6 +14953,10 @@ def airsnitch_run():
             'airsnitch_tests':          data.get('tests'),
             'airsnitch_same_bss':       data.get('same_bss'),
             'airsnitch_server':         data.get('server'),
+            'airsnitch_victim_ssid':    data.get('victim_ssid'),
+            'airsnitch_victim_psk':     data.get('victim_psk'),
+            'airsnitch_attacker_ssid':  data.get('attacker_ssid'),
+            'airsnitch_attacker_psk':   data.get('attacker_psk'),
         }.items() if v is not None}
 
         original_cfg = {}

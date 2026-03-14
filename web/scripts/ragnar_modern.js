@@ -8029,6 +8029,10 @@ async function runAirSnitch() {
     const server        = document.getElementById('airsnitch-server')?.value.trim()          || '8.8.8.8';
     const sameBss       = document.getElementById('airsnitch-same-bss')?.checked             || false;
     const tests         = [...document.querySelectorAll('.airsnitch-test-check:checked')].map(cb => cb.value);
+    const victimSsid    = document.getElementById('airsnitch-victim-ssid')?.value.trim()    || '';
+    const victimPsk     = document.getElementById('airsnitch-victim-psk')?.value            || '';
+    const attackerSsid  = document.getElementById('airsnitch-attacker-ssid')?.value.trim()  || '';
+    const attackerPsk   = document.getElementById('airsnitch-attacker-psk')?.value          || '';
 
     if (tests.length === 0) {
         if (statusDiv) { statusDiv.classList.remove('hidden'); statusDiv.textContent = 'Select at least one test.'; }
@@ -8040,13 +8044,18 @@ async function runAirSnitch() {
     if (statusDiv) { statusDiv.classList.remove('hidden'); statusDiv.textContent = 'Tests running in background…'; }
 
     try {
-        const data = await postAPI('/api/airsnitch/run', {
+        const body = {
             iface_victim: ifaceVictim,
             iface_attacker: ifaceAttacker,
             server: server,
             same_bss: sameBss,
             tests: tests,
-        });
+        };
+        if (victimSsid)   body.victim_ssid    = victimSsid;
+        if (victimPsk)    body.victim_psk     = victimPsk;
+        if (attackerSsid) body.attacker_ssid  = attackerSsid;
+        if (attackerPsk)  body.attacker_psk   = attackerPsk;
+        const data = await postAPI('/api/airsnitch/run', body);
         if (statusDiv) statusDiv.textContent = data.message || 'Started.';
         addConsoleMessage('AirSnitch tests started', 'info');
 
