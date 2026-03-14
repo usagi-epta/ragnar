@@ -1376,17 +1376,23 @@
                         <div class="bg-slate-800 rounded p-3">
                             <h5 class="font-medium text-sm mb-2 text-green-300">Configuration</h5>
                             <div class="space-y-2">
-                                <div class="flex gap-2">
+                                <div class="flex gap-2 items-end">
                                     <div class="flex-1">
                                         <label class="text-xs text-gray-400">Victim interface</label>
-                                        <input type="text" id="airsnitch-iface-victim" value="wlan1" placeholder="wlan1"
+                                        <select id="airsnitch-iface-victim"
                                             class="w-full bg-slate-700 text-white text-xs px-2 py-1 rounded border border-slate-600 focus:outline-none focus:border-green-500 mt-1">
+                                            <option value="wlan1">wlan1</option>
+                                        </select>
                                     </div>
                                     <div class="flex-1">
                                         <label class="text-xs text-gray-400">Attacker interface</label>
-                                        <input type="text" id="airsnitch-iface-attacker" value="wlan2" placeholder="wlan2"
+                                        <select id="airsnitch-iface-attacker"
                                             class="w-full bg-slate-700 text-white text-xs px-2 py-1 rounded border border-slate-600 focus:outline-none focus:border-green-500 mt-1">
+                                            <option value="wlan2">wlan2</option>
+                                        </select>
                                     </div>
+                                    <button onclick="populateAirSnitchInterfaceDropdowns()" title="Refresh interfaces"
+                                        class="bg-slate-600 hover:bg-slate-500 text-white px-2 py-1 rounded text-xs transition-colors mb-0.5">↺</button>
                                 </div>
                                 <div class="flex gap-2">
                                     <div class="flex-1">

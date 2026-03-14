@@ -1036,6 +1036,7 @@ async function loadTabData(tabName) {
             if (manualModeActive) {
                 await loadPentestData();
                 checkAirSnitchInstalled();
+                populateAirSnitchInterfaceDropdowns();
                 refreshAirSnitchResults();
             } else {
                 addConsoleMessage('Enable Pentest Mode to access the Pentest tab', 'warning');
@@ -7896,6 +7897,56 @@ async function downloadPentestReport() {
 // ============================================================================
 // AIRSNITCH – Wi-Fi Client Isolation Testing
 // ============================================================================
+
+async function populateAirSnitchInterfaceDropdowns() {
+    const victimSel   = document.getElementById('airsnitch-iface-victim');
+    const attackerSel = document.getElementById('airsnitch-iface-attacker');
+    if (!victimSel || !attackerSel) return;
+
+    try {
+        const [wifiData, ethData] = await Promise.allSettled([
+            fetchAPI('/api/wifi/interfaces'),
+            fetchAPI('/api/ethernet/interfaces'),
+        ]);
+
+        const ifaces = [];
+        if (wifiData.status === 'fulfilled' && Array.isArray(wifiData.value?.interfaces)) {
+            wifiData.value.interfaces.forEach(i => {
+                const label = i.connected_ssid
+                    ? `${i.name} — ${i.connected_ssid} (${i.state})`
+                    : `${i.name} — ${i.state}`;
+                ifaces.push({ value: i.name, label });
+            });
+        }
+        if (ethData.status === 'fulfilled' && Array.isArray(ethData.value?.interfaces)) {
+            ethData.value.interfaces.forEach(i => {
+                const label = `${i.name} — ${i.state || (i.connected ? 'connected' : 'disconnected')}`;
+                ifaces.push({ value: i.name, label });
+            });
+        }
+
+        if (ifaces.length === 0) return;
+
+        const prevVictim   = victimSel.value;
+        const prevAttacker = attackerSel.value;
+
+        [victimSel, attackerSel].forEach(sel => {
+            sel.innerHTML = '';
+            ifaces.forEach(({ value, label }) => {
+                const opt = document.createElement('option');
+                opt.value = value;
+                opt.textContent = label;
+                sel.appendChild(opt);
+            });
+        });
+
+        // Restore previous selection if still available
+        if (ifaces.some(i => i.value === prevVictim))   victimSel.value   = prevVictim;
+        if (ifaces.some(i => i.value === prevAttacker)) attackerSel.value = prevAttacker;
+    } catch (e) {
+        // Leave defaults in place on error
+    }
+}
 
 async function checkAirSnitchInstalled() {
     try {
